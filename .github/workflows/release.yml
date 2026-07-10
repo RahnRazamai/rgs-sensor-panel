@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Check .NET SDK
+        run: dotnet --version
+
+      - name: Check Flutter SDK
+        run: flutter --version
+
+      - name: Restore Backend
+        run: dotnet restore sensor_backend\RgsSensorBackend.csproj
+
+      - name: Build Backend
+        run: dotnet build sensor_backend\RgsSensorBackend.csproj -c Release --no-restore
+
+      - name: Restore Flutter
+        working-directory: flutter_desktop
+        run: flutter pub get
+
+      - name: Analyze Flutter
+        working-directory: flutter_desktop
+        run: flutter analyze
+
+      - name: Test Flutter
+        working-directory: flutter_desktop
+        run: flutter test
+
+      - name: Build Flutter Windows
+        working-directory: flutter_desktop
+        run: flutter build windows --release
+
+      - name: Prepare Release Variables
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $safeTag = $tag -replace '[^A-Za-z0-9._-]', '-'
+          $zipName = "RGS-Sensor-Panel-$safeTag-win-x64.zip"
+          $installerBaseName = "RGS-Sensor-Panel-$safeTag-win-x64-Setup"
+          $installerName = "$installerBaseName.exe"
+          "SAFE_TAG=$safeTag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_BASENAME=$installerBaseName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_NAME=$installerName" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force installer-output | Out-Null
+          $inno = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $inno)) {
+            $inno = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          & $inno "installer\RgsSensorPanel.iss" "/DAppVersion=$env:SAFE_TAG" "/Oinstaller-output" "/F$env:INSTALLER_BASENAME"
+
+      - name: Package Portable Zip
+        shell: pwsh
+        run: Compress-Archive -Path flutter_desktop\build\windows\x64\runner\Release\* -DestinationPath $env:ZIP_NAME -Force
+
+      - name: Write Release Notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          @"
+          # RGS Sensor Panel $tag
+
+          ## Changes
+          - Flutter Windows UI for Rainmeter-style CPU, RAM, GPU, SSD, and date/time widgets.
+          - Grouped GPU and SSD widgets with per-device show/hide controls.
+          - Control panel for widget visibility, tray behavior, widget opacity, always-on-top, and auto launch on boot.
+          - Support panel with Ko-fi, YouTube, and GitHub Sponsor links.
+          - Bundled C# LibreHardwareMonitor-based backend for temperature, power, and clock readings.
+
+          ## Downloads
+          - Installer: ``$env:INSTALLER_NAME``
+          - Portable zip: ``$env:ZIP_NAME``
+
+          ## Notes
+          - The app is built for Windows and ships as a Flutter desktop app with the backend bundled beside it.
+          - Hardware sensor access may ask for Windows administrator approval once when enabled in the app.
+          "@ | Set-Content -Path release-notes.md
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            ${{ env.ZIP_NAME }}
+            installer-output/${{ env.INSTALLER_NAME }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+            installer-output/${{ env.INSTALLER_NAME }}
+          body_path: release-notes.md
+          generate_release_notes: true

@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build backend",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "${workspaceFolder}/sensor_backend/RgsSensorBackend.csproj",
+        "-c",
+        "Release"
+      ],
+      "problemMatcher": "$msCompile",
+      "group": "build"
+    },
+    {
+      "label": "flutter pub get",
+      "type": "process",
+      "command": "flutter",
+      "args": [
+        "pub",
+        "get"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/flutter_desktop"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "flutter build windows",
+      "type": "process",
+      "command": "flutter",
+      "args": [
+        "build",
+        "windows",
+        "--release"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/flutter_desktop"
+      },
+      "dependsOn": [
+        "build backend",
+        "flutter pub get"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+# Build output
+bin/
+obj/
+out/
+publish/
+artifacts/
+installer-output/
+release-notes.md
+build/
+
+# Visual Studio and Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET
+TestResults/
+*.nupkg
+*.snupkg
+*.binlog
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+flutter_desktop/.dart_tool/
+flutter_desktop/.flutter-plugins
+flutter_desktop/.flutter-plugins-dependencies
+flutter_desktop/build/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Logs and local runtime files
+*.log
+*.tmp
+*.temp
+
+# Local configuration
+*.local.json
+appsettings.Development.json
