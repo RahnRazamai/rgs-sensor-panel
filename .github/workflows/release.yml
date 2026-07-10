@@ -87,6 +87,8 @@ jobs:
 
       - name: Build Flutter Windows
         working-directory: flutter_desktop
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: flutter build windows --release
 
       - name: Prepare Release Variables

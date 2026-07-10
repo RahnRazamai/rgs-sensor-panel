@@ -10,6 +10,10 @@ set(BINARY_NAME "rgs_sensor_panel_flutter")
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
 
+# GitHub's Windows runners can ship CMake 4, which rejects older minimum CMake
+# versions declared by the Firebase C++ SDK extracted by firebase_core.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for third-party CMake projects")
+
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(IS_MULTICONFIG)
