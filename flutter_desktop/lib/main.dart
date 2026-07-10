@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'firebase_options.dart';
 import 'src/settings/panel_settings.dart';
 import 'src/sensors/rgs_windows_sensors.dart';
 
@@ -14,6 +16,9 @@ const String githubSponsorUrl = 'https://github.com/sponsors/RahnRazamai';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   final widgetKind = RgsWidgetKind.fromArgs(args);
   await _configureNativeWindow(widgetKind);

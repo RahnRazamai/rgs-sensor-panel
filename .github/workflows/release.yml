@@ -34,6 +34,23 @@ jobs:
       - name: Check Flutter SDK
         run: flutter --version
 
+      - name: Configure FlutterFire
+        working-directory: flutter_desktop
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        shell: pwsh
+        run: |
+          dart pub global activate flutterfire_cli
+          
+          # Save service account JSON
+          $env:FIREBASE_SERVICE_ACCOUNT | Out-File -FilePath service-account.json -Encoding UTF8
+          
+          # Configure FlutterFire with service account
+          flutterfire configure --project=rgs-sensor-panel --yes --platforms=windows --service-account=service-account.json
+          
+          # Clean up
+          Remove-Item service-account.json
+
       - name: Restore Backend
         run: dotnet restore sensor_backend\RgsSensorBackend.csproj
 

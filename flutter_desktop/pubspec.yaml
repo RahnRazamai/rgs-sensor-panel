@@ -8,6 +8,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  firebase_core: ^2.29.0
   tray_manager: ^0.5.3
   window_manager: ^0.4.3
 
