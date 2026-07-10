@@ -38,8 +38,9 @@ internal static class Program
         {
             listener.Start();
         }
-        catch (SocketException)
+        catch (SocketException error)
         {
+            Log.Write(error);
             return 2;
         }
 

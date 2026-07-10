@@ -177,10 +177,13 @@ final class RgsWindowsSensors {
     }
 
     final script = _buildInstallTaskScript(backendPath);
+    final elevatedArguments =
+        _powerShellQuote('-NoProfile -ExecutionPolicy Bypass -Command $script');
     final command =
-        'Start-Process -FilePath powershell.exe '
-        '-ArgumentList ${_powerShellQuote('-NoProfile -ExecutionPolicy Bypass -Command $script')} '
-        '-WindowStyle Hidden -Verb RunAs -Wait';
+        '\$process = Start-Process -FilePath powershell.exe '
+        '-ArgumentList $elevatedArguments '
+        '-WindowStyle Hidden -Verb RunAs -Wait -PassThru; '
+        'exit \$process.ExitCode';
 
     try {
       final result = await Process.run(
@@ -193,15 +196,16 @@ final class RgsWindowsSensors {
         );
       }
 
-      final snapshot = await _waitForBackend();
-      if (snapshot.available) {
+      if (await _waitForBackendHealth()) {
         return const RgsEnableSensorsResult.success();
       }
 
+      final snapshot = await _readBackendSnapshot();
+      final diagnostics = await _backendDiagnostics();
       return RgsEnableSensorsResult.failure(
         'The sensor task started, but the backend did not answer yet. '
         'Check %TEMP%\\rgs-sensor-backend.log if this keeps happening. '
-        '${snapshot.status}',
+        '${snapshot.status}${diagnostics.isEmpty ? '' : ' $diagnostics'}',
       );
     } on Object {
       return const RgsEnableSensorsResult.failure(
@@ -210,16 +214,33 @@ final class RgsWindowsSensors {
     }
   }
 
-  Future<RgsSensorSnapshot> _waitForBackend() async {
-    RgsSensorSnapshot snapshot = RgsSensorSnapshot.unavailable('RGS backend unavailable.');
+  Future<bool> _waitForBackendHealth() async {
     for (var attempt = 0; attempt < 15; attempt++) {
       await Future<void>.delayed(const Duration(seconds: 1));
-      snapshot = await _readBackendSnapshot();
-      if (snapshot.available) {
-        return snapshot;
+      if (await _readBackendHealth()) {
+        return true;
       }
     }
-    return snapshot;
+    return false;
+  }
+
+  Future<bool> _readBackendHealth() async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 1);
+    try {
+      final uri = Uri.parse('http://127.0.0.1:$backendPort/health');
+      final request = await client.getUrl(uri);
+      final response = await request.close().timeout(const Duration(seconds: 2));
+      if (response.statusCode != HttpStatus.ok) {
+        return false;
+      }
+
+      final text = await response.transform(utf8.decoder).join();
+      return text.contains('"ok":true');
+    } on Object {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> _tryStartExistingTaskThrottled() async {
@@ -683,19 +704,94 @@ final class RgsWindowsSensors {
   static String _buildInstallTaskScript(String backendPath) {
     final exe = _powerShellQuote(backendPath);
     final taskName = _powerShellQuote(backendTaskName);
-    final taskCommand = _powerShellQuote('"$backendPath" --port $backendPort');
+    final taskArguments = _powerShellQuote('--port $backendPort');
     return [
       r"$ErrorActionPreference = 'Stop'",
       '\$taskName = $taskName',
       '\$exe = $exe',
       'if (-not (Test-Path -LiteralPath \$exe)) { throw "Backend executable was not found." }',
-      '\$taskCommand = $taskCommand',
-      'schtasks.exe /End /TN \$taskName 2>\$null',
-      'schtasks.exe /Create /TN \$taskName /TR \$taskCommand /SC ONLOGON /RL HIGHEST /F',
-      'if (\$LASTEXITCODE -ne 0) { throw "schtasks /Create failed" }',
-      'schtasks.exe /Run /TN \$taskName',
-      'if (\$LASTEXITCODE -ne 0) { throw "schtasks /Run failed" }',
+      '\$taskArguments = $taskArguments',
+      'Stop-ScheduledTask -TaskName \$taskName -ErrorAction SilentlyContinue',
+      "Get-Process -Name 'rgs-sensor-backend' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+      '\$action = New-ScheduledTaskAction -Execute \$exe -Argument \$taskArguments',
+      '\$trigger = New-ScheduledTaskTrigger -AtLogOn',
+      '\$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name',
+      '\$principal = New-ScheduledTaskPrincipal -UserId \$user -LogonType Interactive -RunLevel Highest',
+      'Register-ScheduledTask -TaskName \$taskName -Action \$action -Trigger \$trigger -Principal \$principal -Force | Out-Null',
+      'Start-ScheduledTask -TaskName \$taskName',
     ].join('; ');
+  }
+
+  Future<String> _backendDiagnostics() async {
+    final parts = <String>[];
+    final taskStatus = await _queryBackendTaskStatus();
+    if (taskStatus != null) {
+      parts.add(taskStatus);
+    }
+
+    final logTail = _readBackendLogTail();
+    if (logTail != null) {
+      parts.add(logTail);
+    }
+
+    return parts.join(' ');
+  }
+
+  Future<String?> _queryBackendTaskStatus() async {
+    try {
+      final result = await Process.run('schtasks.exe', [
+        '/Query',
+        '/TN',
+        backendTaskName,
+        '/V',
+        '/FO',
+        'LIST',
+      ]).timeout(const Duration(seconds: 3));
+      if (result.exitCode != 0) {
+        return null;
+      }
+
+      final output = '${result.stdout}\n${result.stderr}';
+      final status = _findTaskLine(output, 'Status');
+      final lastResult = _findTaskLine(output, 'Last Run Result');
+      final details = [
+        if (status != null) 'task status: $status',
+        if (lastResult != null) 'last result: $lastResult',
+      ].join(', ');
+      return details.isEmpty ? null : '($details)';
+    } on Object {
+      return null;
+    }
+  }
+
+  static String? _findTaskLine(String output, String key) {
+    final prefix = '$key:';
+    for (final line in const LineSplitter().convert(output)) {
+      final trimmed = line.trim();
+      if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+        return trimmed.substring(prefix.length).trim();
+      }
+    }
+    return null;
+  }
+
+  static String? _readBackendLogTail() {
+    try {
+      final logFile = File('${Directory.systemTemp.path}\\rgs-sensor-backend.log');
+      if (!logFile.existsSync()) {
+        return null;
+      }
+
+      final lines = logFile.readAsLinesSync();
+      if (lines.isEmpty) {
+        return null;
+      }
+
+      final tail = lines.skip(lines.length > 2 ? lines.length - 2 : 0).join(' | ');
+      return 'log: ${tail.length > 360 ? '${tail.substring(0, 360)}...' : tail}';
+    } on Object {
+      return null;
+    }
   }
 
   static String _powerShellQuote(String value) {
