@@ -58,8 +58,11 @@ final class RgsPanelSettings {
       }
 
       final defaults = firstLaunchDefaults();
+      final hiddenIds = decoded.containsKey('HiddenDeviceIds')
+          ? _readStringSet(decoded['HiddenDeviceIds'])
+          : defaults.hiddenIds;
       return RgsPanelSettings(
-        hiddenIds: _readStringSet(decoded['HiddenDeviceIds']),
+        hiddenIds: hiddenIds,
         useTwentyFourHourClock:
             decoded['UseTwentyFourHourClock'] as bool? ?? defaults.useTwentyFourHourClock,
         minimizeToTrayOnClose:

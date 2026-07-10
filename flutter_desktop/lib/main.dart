@@ -178,6 +178,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   RgsPanelSettings _settings = RgsPanelSettings.load();
   final Map<RgsWidgetKind, Process> _widgetProcesses = {};
   final Set<RgsWidgetKind> _visibleWidgets = {};
+  final Set<RgsWidgetKind> _widgetCloseRequestedByPanel = {};
   Timer? _timer;
   bool _enablingSensors = false;
   bool _isQuitting = false;
@@ -307,15 +308,15 @@ class _ControlPanelPageState extends State<ControlPanelPage>
 
   Future<void> _enableSensors() async {
     setState(() => _enablingSensors = true);
-    final ok = await RgsWindowsSensors.instance.enableBackgroundSensors();
+    final result = await RgsWindowsSensors.instance.enableBackgroundSensors();
     if (!mounted) {
       return;
     }
     setState(() => _enablingSensors = false);
     await _refresh();
-    if (!ok && mounted) {
+    if (!result.enabled && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not enable background sensors.')),
+        SnackBar(content: Text(result.message)),
       );
     }
   }
@@ -353,8 +354,17 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       unawaited(
         process.exitCode.then((_) {
           _widgetProcesses.remove(kind);
+          final wasClosedByPanel = _widgetCloseRequestedByPanel.remove(kind);
+          if (!_isQuitting && !wasClosedByPanel) {
+            _settings = RgsPanelSettings.load();
+            _settings.setVisible(kind.settingId, false);
+            _settings.save();
+          }
           if (mounted) {
-            setState(() => _visibleWidgets.remove(kind));
+            setState(() {
+              _settings = RgsPanelSettings.load();
+              _visibleWidgets.remove(kind);
+            });
           }
         }),
       );
@@ -362,7 +372,11 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
 
-    _widgetProcesses.remove(kind)?.kill();
+    final process = _widgetProcesses.remove(kind);
+    if (process != null) {
+      _widgetCloseRequestedByPanel.add(kind);
+      process.kill();
+    }
     setState(() => _visibleWidgets.remove(kind));
   }
 

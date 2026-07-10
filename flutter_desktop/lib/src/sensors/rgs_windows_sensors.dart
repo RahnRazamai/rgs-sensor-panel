@@ -115,6 +115,25 @@ final class RgsStorageReading {
   final double? clock;
 }
 
+final class RgsEnableSensorsResult {
+  const RgsEnableSensorsResult._({
+    required this.enabled,
+    required this.message,
+  });
+
+  const RgsEnableSensorsResult.success()
+      : this._(
+          enabled: true,
+          message: 'Background sensors enabled.',
+        );
+
+  const RgsEnableSensorsResult.failure(this.message)
+      : enabled = false;
+
+  final bool enabled;
+  final String message;
+}
+
 final class RgsWindowsSensors {
   RgsWindowsSensors._();
 
@@ -149,10 +168,12 @@ final class RgsWindowsSensors {
     );
   }
 
-  Future<bool> enableBackgroundSensors() async {
+  Future<RgsEnableSensorsResult> enableBackgroundSensors() async {
     final backendPath = _findBackendPath();
     if (backendPath == null) {
-      return false;
+      return const RgsEnableSensorsResult.failure(
+        'RGS backend executable was not found in the app folder.',
+      );
     }
 
     final script = _buildInstallTaskScript(backendPath);
@@ -167,13 +188,38 @@ final class RgsWindowsSensors {
         ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
       );
       if (result.exitCode != 0) {
-        return false;
+        return const RgsEnableSensorsResult.failure(
+          'Windows did not create the elevated sensor task. Approve the UAC prompt and try again.',
+        );
       }
-      await Future<void>.delayed(const Duration(seconds: 2));
-      return (await _readBackendSnapshot()).available;
+
+      final snapshot = await _waitForBackend();
+      if (snapshot.available) {
+        return const RgsEnableSensorsResult.success();
+      }
+
+      return RgsEnableSensorsResult.failure(
+        'The sensor task started, but the backend did not answer yet. '
+        'Check %TEMP%\\rgs-sensor-backend.log if this keeps happening. '
+        '${snapshot.status}',
+      );
     } on Object {
-      return false;
+      return const RgsEnableSensorsResult.failure(
+        'Windows could not start the elevated sensor setup.',
+      );
     }
+  }
+
+  Future<RgsSensorSnapshot> _waitForBackend() async {
+    RgsSensorSnapshot snapshot = RgsSensorSnapshot.unavailable('RGS backend unavailable.');
+    for (var attempt = 0; attempt < 15; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      snapshot = await _readBackendSnapshot();
+      if (snapshot.available) {
+        return snapshot;
+      }
+    }
+    return snapshot;
   }
 
   Future<void> _tryStartExistingTaskThrottled() async {
