@@ -35,6 +35,6 @@ void main() {
     );
 
     expect(find.text('CPU'), findsOneWidget);
-    expect(find.text('Processor'), findsOneWidget);
+    expect(find.text('Loading sensors'), findsOneWidget);
   });
 }

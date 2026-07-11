@@ -29,6 +29,7 @@ Future<void> main(List<String> args) async {
   runApp(
     RgsSensorPanelApp(
       widgetKind: widgetKind,
+      startHidden: startHidden,
     ),
   );
 }
@@ -185,10 +186,12 @@ class RgsSensorPanelApp extends StatelessWidget {
   const RgsSensorPanelApp({
     super.key,
     required this.widgetKind,
+    this.startHidden = false,
     this.pollSensors = true,
   });
 
   final RgsWidgetKind? widgetKind;
+  final bool startHidden;
   final bool pollSensors;
 
   @override
@@ -206,7 +209,10 @@ class RgsSensorPanelApp extends StatelessWidget {
             : Colors.transparent,
       ),
       home: widgetKind == null
-          ? ControlPanelPage(pollSensors: pollSensors)
+          ? ControlPanelPage(
+              pollSensors: pollSensors,
+              startHidden: startHidden,
+            )
           : WidgetWindowPage(kind: widgetKind!, pollSensors: pollSensors),
     );
   }
@@ -238,6 +244,8 @@ enum RgsWidgetKind {
   }
 
   String get id => name;
+
+  bool get requiresSensors => this != RgsWidgetKind.time;
 
   String get settingId {
     return switch (this) {
@@ -283,9 +291,11 @@ enum RgsWidgetKind {
 class ControlPanelPage extends StatefulWidget {
   const ControlPanelPage({
     super.key,
+    this.startHidden = false,
     this.pollSensors = true,
   });
 
+  final bool startHidden;
   final bool pollSensors;
 
   @override
@@ -299,9 +309,11 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   final Map<RgsWidgetKind, Process> _widgetProcesses = {};
   final Set<RgsWidgetKind> _visibleWidgets = {};
   final Set<RgsWidgetKind> _widgetCloseRequestedByPanel = {};
+  final Set<RgsWidgetKind> _pendingWidgetLaunches = {};
   Timer? _timer;
   bool _enablingSensors = false;
   bool _isQuitting = false;
+  bool _launchingPendingWidgets = false;
 
   @override
   void initState() {
@@ -317,7 +329,12 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
     _refresh();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _launchConfiguredWidgets());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.startHidden) {
+        unawaited(_hideToTray());
+      }
+      unawaited(_launchConfiguredWidgets());
+    });
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
   }
 
@@ -425,6 +442,9 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       _snapshot = snapshot;
       _settings = settings;
     });
+    if (snapshot.available) {
+      unawaited(_launchPendingWidgetsIfReady());
+    }
   }
 
   Future<void> _enableSensors() async {
@@ -450,6 +470,25 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     }
   }
 
+  Future<void> _launchPendingWidgetsIfReady() async {
+    if (_launchingPendingWidgets || !_snapshot.available) {
+      return;
+    }
+
+    _launchingPendingWidgets = true;
+    try {
+      final pendingWidgets = _pendingWidgetLaunches
+          .where((kind) => _settings.isVisible(kind.settingId))
+          .toList();
+      _pendingWidgetLaunches.clear();
+      for (final kind in pendingWidgets) {
+        await _setWidgetVisible(kind, true, save: false);
+      }
+    } finally {
+      _launchingPendingWidgets = false;
+    }
+  }
+
   Future<void> _setWidgetVisible(
     RgsWidgetKind kind,
     bool visible, {
@@ -461,6 +500,14 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     }
 
     if (visible) {
+      if (kind.requiresSensors && !_snapshot.available) {
+        _pendingWidgetLaunches.add(kind);
+        if (mounted) {
+          setState(() {});
+        }
+        return;
+      }
+
       if (_widgetProcesses.containsKey(kind)) {
         setState(() => _visibleWidgets.add(kind));
         return;
@@ -488,6 +535,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
 
+    _pendingWidgetLaunches.remove(kind);
     final process = _widgetProcesses.remove(kind);
     if (process != null) {
       _widgetCloseRequestedByPanel.add(kind);
@@ -970,6 +1018,14 @@ class _WidgetContent extends StatelessWidget {
         .toList();
     final drives = snapshot.storage.where((drive) => settings.isVisible(drive.id)).toList();
 
+    if (kind.requiresSensors && !snapshot.available) {
+      return _LoadingWidget(
+        accent: kind.accent,
+        title: 'Loading sensors',
+        message: _sensorLoadingMessage(snapshot.status),
+      );
+    }
+
     if (showVisibilityPanel && kind == RgsWidgetKind.gpu) {
       return _VisibilityPanel(
         emptyLabel: 'No GPU sensors',
@@ -1107,6 +1163,57 @@ class _WidgetContent extends StatelessWidget {
             stat3: 'WRITE ${_rate(drive.writeBytesPerSecond)}',
           ),
       ],
+    );
+  }
+}
+
+class _LoadingWidget extends StatelessWidget {
+  const _LoadingWidget({
+    required this.accent,
+    required this.title,
+    required this.message,
+  });
+
+  final Color accent;
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 34,
+            height: 34,
+            child: CircularProgressIndicator(
+              strokeWidth: 4,
+              color: accent,
+              backgroundColor: const Color(0xFF101010),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFFBABAB7),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1674,6 +1781,15 @@ Future<void> _openUrl(String url) async {
 String _percent(double? value) => value == null ? 'N/A' : '${value.toStringAsFixed(0)}%';
 String _temperature(double? value) => value == null ? '-- C' : '${value.toStringAsFixed(0)} C';
 String _power(double? value) => value == null ? '-- W' : '${value.toStringAsFixed(0)} W';
+
+String _sensorLoadingMessage(String status) {
+  final normalized = status.toLowerCase();
+  if (normalized.contains('not found') || normalized.contains('only available')) {
+    return status;
+  }
+
+  return 'Waiting for RGS backend...';
+}
 
 String _clock(double? value) {
   if (value == null) {
