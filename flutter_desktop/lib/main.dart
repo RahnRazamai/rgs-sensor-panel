@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'firebase_options.dart';
 import 'src/settings/panel_settings.dart';
+import 'src/settings/startup_registration.dart';
 import 'src/sensors/rgs_windows_sensors.dart';
 
 const String koFiSupportUrl = 'https://ko-fi.com/rahngamingstudio';
@@ -21,7 +22,8 @@ Future<void> main(List<String> args) async {
   );
 
   final widgetKind = RgsWidgetKind.fromArgs(args);
-  await _configureNativeWindow(widgetKind);
+  final startHidden = widgetKind == null && args.contains('--rgs-startup');
+  await _configureNativeWindow(widgetKind, startHidden: startHidden);
 
   runApp(
     RgsSensorPanelApp(
@@ -30,34 +32,52 @@ Future<void> main(List<String> args) async {
   );
 }
 
-Future<void> _configureNativeWindow(RgsWidgetKind? widgetKind) async {
+Future<void> _configureNativeWindow(
+  RgsWidgetKind? widgetKind, {
+  required bool startHidden,
+}) async {
   if (!Platform.isWindows) {
     return;
   }
 
   await windowManager.ensureInitialized();
   final isWidget = widgetKind != null;
+  final settings = RgsPanelSettings.load();
+  final savedWidgetPosition = widgetKind == null
+      ? null
+      : settings.widgetPosition(widgetKind.settingId);
   final options = WindowOptions(
     size: isWidget ? const Size(320, 210) : const Size(420, 640),
     minimumSize: isWidget ? const Size(292, 188) : const Size(380, 520),
-    center: !isWidget,
+    center: !isWidget && !startHidden,
     title: isWidget ? widgetKind.windowTitle : 'RGS Sensor Control',
     titleBarStyle: isWidget ? TitleBarStyle.hidden : TitleBarStyle.normal,
-    skipTaskbar: isWidget,
+    skipTaskbar: isWidget || startHidden,
     backgroundColor: isWidget ? Colors.transparent : const Color(0xFF111111),
   );
 
   await windowManager.waitUntilReadyToShow(options, () async {
     if (isWidget) {
-      await windowManager.setAlwaysOnTop(true);
-      await windowManager.setOpacity(RgsPanelSettings.load().widgetOpacity);
-    } else {
-      await windowManager.setPreventClose(true);
+      await windowManager.setAlwaysOnTop(settings.alwaysOnTop);
+      await windowManager.setOpacity(settings.widgetOpacity);
+      if (savedWidgetPosition != null) {
+        await windowManager.setPosition(
+          Offset(savedWidgetPosition.left, savedWidgetPosition.top),
+        );
+      }
+      await windowManager.show();
+      return;
     }
+
+    await windowManager.setPreventClose(true);
+    if (startHidden) {
+      await windowManager.hide();
+      await windowManager.setSkipTaskbar(true);
+      return;
+    }
+
     await windowManager.show();
-    if (!isWidget) {
-      await windowManager.focus();
-    }
+    await windowManager.focus();
   });
 }
 
@@ -190,6 +210,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       windowManager.addListener(this);
       trayManager.addListener(this);
       unawaited(_setupTray());
+      unawaited(_syncStartupRegistration());
     }
 
     if (!widget.pollSensors) {
@@ -348,18 +369,13 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       final process = await Process.start(
         Platform.resolvedExecutable,
         ['--rgs-widget', kind.id],
-        workingDirectory: Directory.current.path,
+        workingDirectory: File(Platform.resolvedExecutable).parent.path,
       );
       _widgetProcesses[kind] = process;
       unawaited(
         process.exitCode.then((_) {
           _widgetProcesses.remove(kind);
-          final wasClosedByPanel = _widgetCloseRequestedByPanel.remove(kind);
-          if (!_isQuitting && !wasClosedByPanel) {
-            _settings = RgsPanelSettings.load();
-            _settings.setVisible(kind.settingId, false);
-            _settings.save();
-          }
+          _widgetCloseRequestedByPanel.remove(kind);
           if (mounted) {
             setState(() {
               _settings = RgsPanelSettings.load();
@@ -394,6 +410,40 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       update(_settings);
       _settings.save();
     });
+  }
+
+  Future<void> _setAutoLaunch(bool value) async {
+    final previousValue = _settings.autoLaunchOnBoot;
+    setState(() => _settings.autoLaunchOnBoot = value);
+
+    final result = await RgsStartupRegistration.setEnabled(value);
+    if (!mounted) {
+      return;
+    }
+
+    if (result.success) {
+      _settings.save();
+      return;
+    }
+
+    setState(() => _settings.autoLaunchOnBoot = previousValue);
+    _settings.save();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result.message)),
+    );
+  }
+
+  Future<void> _syncStartupRegistration() async {
+    final result = await RgsStartupRegistration.setEnabled(
+      _settings.autoLaunchOnBoot,
+    );
+    if (!mounted || result.success || !_settings.autoLaunchOnBoot) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result.message)),
+    );
   }
 
   void _setDeviceVisible(String id, bool visible) {
@@ -461,9 +511,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
                     ),
                     SwitchListTile(
                       value: _settings.autoLaunchOnBoot,
-                      onChanged: (value) => _setPreference(
-                        (settings) => settings.autoLaunchOnBoot = value,
-                      ),
+                      onChanged: (value) => unawaited(_setAutoLaunch(value)),
                       title: const Text('Auto launch on boot'),
                     ),
                     SwitchListTile(
@@ -570,7 +618,8 @@ class WidgetWindowPage extends StatefulWidget {
   State<WidgetWindowPage> createState() => _WidgetWindowPageState();
 }
 
-class _WidgetWindowPageState extends State<WidgetWindowPage> {
+class _WidgetWindowPageState extends State<WidgetWindowPage>
+    with WindowListener {
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
   RgsPanelSettings _settings = RgsPanelSettings.load();
   Timer? _timer;
@@ -580,6 +629,9 @@ class _WidgetWindowPageState extends State<WidgetWindowPage> {
   @override
   void initState() {
     super.initState();
+    if (Platform.isWindows && widget.pollSensors) {
+      windowManager.addListener(this);
+    }
     if (!widget.pollSensors) {
       return;
     }
@@ -590,7 +642,15 @@ class _WidgetWindowPageState extends State<WidgetWindowPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    if (Platform.isWindows && widget.pollSensors) {
+      windowManager.removeListener(this);
+    }
     super.dispose();
+  }
+
+  @override
+  void onWindowMoved() {
+    unawaited(_saveWidgetPosition());
   }
 
   Future<void> _refresh() async {
@@ -625,6 +685,8 @@ class _WidgetWindowPageState extends State<WidgetWindowPage> {
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanStart: (_) => windowManager.startDragging(),
+                  onPanEnd: (_) => unawaited(_saveWidgetPosition()),
+                  onPanCancel: () => unawaited(_saveWidgetPosition()),
                   child: Container(
                     height: 34,
                     padding: const EdgeInsets.only(left: 12, right: 6),
@@ -758,7 +820,20 @@ class _WidgetWindowPageState extends State<WidgetWindowPage> {
     unawaited(_applyWindowPreferences(_settings, _snapshot));
   }
 
+  Future<void> _saveWidgetPosition() async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    final position = await windowManager.getPosition();
+    final settings = RgsPanelSettings.load();
+    settings.setWidgetPosition(widget.kind.settingId, position.dx, position.dy);
+    settings.save();
+    _settings = settings;
+  }
+
   Future<void> _hideThisWidget() async {
+    await _saveWidgetPosition();
     _settings.setVisible(widget.kind.settingId, false);
     _settings.save();
     await windowManager.close();

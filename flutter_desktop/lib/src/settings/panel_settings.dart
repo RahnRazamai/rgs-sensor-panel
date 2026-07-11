@@ -1,9 +1,41 @@
 import 'dart:convert';
 import 'dart:io';
 
+final class RgsWidgetPosition {
+  const RgsWidgetPosition({
+    required this.left,
+    required this.top,
+  });
+
+  final double left;
+  final double top;
+
+  Map<String, double> toJson() {
+    return {
+      'Left': left,
+      'Top': top,
+    };
+  }
+
+  static RgsWidgetPosition? fromJson(Object? value) {
+    if (value is! Map) {
+      return null;
+    }
+
+    final left = RgsPanelSettings._asDouble(value['Left'] ?? value['left']);
+    final top = RgsPanelSettings._asDouble(value['Top'] ?? value['top']);
+    if (left == null || top == null) {
+      return null;
+    }
+
+    return RgsWidgetPosition(left: left, top: top);
+  }
+}
+
 final class RgsPanelSettings {
   RgsPanelSettings({
     required Set<String> hiddenIds,
+    required Map<String, RgsWidgetPosition> widgetPositions,
     required this.useTwentyFourHourClock,
     required this.minimizeToTrayOnClose,
     required this.alwaysOnTop,
@@ -11,6 +43,10 @@ final class RgsPanelSettings {
     required this.autoLaunchOnBoot,
     required double widgetOpacity,
   })  : hiddenIds = hiddenIds.map(_normalizeId).toSet(),
+        widgetPositions = {
+          for (final entry in widgetPositions.entries)
+            _normalizeId(entry.key): entry.value,
+        },
         widgetOpacity = _clampOpacity(widgetOpacity);
 
   static const cpuWidgetId = 'widget:cpu';
@@ -20,6 +56,7 @@ final class RgsPanelSettings {
   static const clockWidgetId = 'widget:clock';
 
   final Set<String> hiddenIds;
+  final Map<String, RgsWidgetPosition> widgetPositions;
   bool useTwentyFourHourClock;
   bool minimizeToTrayOnClose;
   bool alwaysOnTop;
@@ -36,6 +73,7 @@ final class RgsPanelSettings {
         storageWidgetId,
         clockWidgetId,
       },
+      widgetPositions: const {},
       useTwentyFourHourClock: true,
       minimizeToTrayOnClose: true,
       alwaysOnTop: true,
@@ -63,6 +101,9 @@ final class RgsPanelSettings {
           : defaults.hiddenIds;
       return RgsPanelSettings(
         hiddenIds: hiddenIds,
+        widgetPositions: decoded.containsKey('WidgetPositions')
+            ? _readWidgetPositions(decoded['WidgetPositions'])
+            : defaults.widgetPositions,
         useTwentyFourHourClock:
             decoded['UseTwentyFourHourClock'] as bool? ?? defaults.useTwentyFourHourClock,
         minimizeToTrayOnClose:
@@ -90,6 +131,14 @@ final class RgsPanelSettings {
 
   bool isVisible(String id) => !hiddenIds.contains(_normalizeId(id));
 
+  RgsWidgetPosition? widgetPosition(String id) {
+    return widgetPositions[_normalizeId(id)];
+  }
+
+  void setWidgetPosition(String id, double left, double top) {
+    widgetPositions[_normalizeId(id)] = RgsWidgetPosition(left: left, top: top);
+  }
+
   void setVisible(String id, bool isVisible) {
     final normalized = _normalizeId(id);
     if (isVisible) {
@@ -109,9 +158,15 @@ final class RgsPanelSettings {
       file.parent.createSync(recursive: true);
       final sortedHiddenIds = hiddenIds.toList()
         ..sort((a, b) => a.compareTo(b));
+      final sortedWidgetPositionKeys = widgetPositions.keys.toList()
+        ..sort((a, b) => a.compareTo(b));
       file.writeAsStringSync(
         const JsonEncoder.withIndent('  ').convert({
           'HiddenDeviceIds': sortedHiddenIds,
+          'WidgetPositions': {
+            for (final key in sortedWidgetPositionKeys)
+              key: widgetPositions[key]?.toJson(),
+          },
           'UseTwentyFourHourClock': useTwentyFourHourClock,
           'MinimizeToTrayOnClose': minimizeToTrayOnClose,
           'AlwaysOnTop': alwaysOnTop,
@@ -135,6 +190,22 @@ final class RgsPanelSettings {
         .map((item) => _normalizeId(item.toString()))
         .where((item) => item.isNotEmpty)
         .toSet();
+  }
+
+  static Map<String, RgsWidgetPosition> _readWidgetPositions(Object? value) {
+    if (value is! Map) {
+      return {};
+    }
+
+    final positions = <String, RgsWidgetPosition>{};
+    for (final entry in value.entries) {
+      final key = _normalizeId(entry.key.toString());
+      final position = RgsWidgetPosition.fromJson(entry.value);
+      if (key.isNotEmpty && position != null) {
+        positions[key] = position;
+      }
+    }
+    return positions;
   }
 
   static String _normalizeId(String id) => id.trim().toLowerCase();
