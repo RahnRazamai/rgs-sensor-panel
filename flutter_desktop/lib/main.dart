@@ -349,7 +349,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   }
 
   Future<void> _setupTray() async {
-    await trayManager.setIcon('assets/rgs-logo.ico');
+    await trayManager.setIcon('assets/rgs-sensor-panel-ico.ico');
     await trayManager.setToolTip('RGS Sensor Panel');
     await trayManager.setContextMenu(
       Menu(
