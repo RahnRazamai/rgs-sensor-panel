@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -62,7 +63,7 @@ Future<void> _configureNativeWindow(
       await windowManager.setOpacity(settings.widgetOpacity);
       if (savedWidgetPosition != null) {
         await windowManager.setPosition(
-          Offset(savedWidgetPosition.left, savedWidgetPosition.top),
+          await _restoreWidgetPosition(savedWidgetPosition),
         );
       }
       await windowManager.show();
@@ -79,6 +80,105 @@ Future<void> _configureNativeWindow(
     await windowManager.show();
     await windowManager.focus();
   });
+}
+
+Future<Offset> _restoreWidgetPosition(RgsWidgetPosition position) async {
+  final currentScale = _currentWindowScaleFactor();
+  if (position.physicalLeft != null && position.physicalTop != null) {
+    return Offset(
+      position.physicalLeft! / currentScale,
+      position.physicalTop! / currentScale,
+    );
+  }
+
+  final legacyPosition = await _restoreLegacyWidgetPosition(
+    position,
+    currentScale,
+  );
+  if (legacyPosition != null) {
+    return legacyPosition;
+  }
+
+  return Offset(position.left, position.top);
+}
+
+Future<Offset?> _restoreLegacyWidgetPosition(
+  RgsWidgetPosition position,
+  double currentScale,
+) async {
+  try {
+    final displays = await screenRetriever.getAllDisplays();
+    final display = _displayForPosition(
+      Offset(position.left, position.top),
+      displays,
+    );
+    if (display == null) {
+      return null;
+    }
+
+    final displayScale = _displayScaleFactor(display);
+    return Offset(
+      position.left * displayScale / currentScale,
+      position.top * displayScale / currentScale,
+    );
+  } on Object {
+    return null;
+  }
+}
+
+Display? _displayForPosition(Offset position, List<Display> displays) {
+  Display? nearestDisplay;
+  var nearestDistance = double.infinity;
+
+  for (final display in displays) {
+    final rect = _displayRect(display);
+    if (rect.contains(position)) {
+      return display;
+    }
+
+    final distance = _distanceToRect(position, rect);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestDisplay = display;
+    }
+  }
+
+  return nearestDisplay;
+}
+
+Rect _displayRect(Display display) {
+  final origin = display.visiblePosition ?? Offset.zero;
+  final size = display.visibleSize ?? display.size;
+  return origin & size;
+}
+
+double _distanceToRect(Offset position, Rect rect) {
+  final dx = position.dx < rect.left
+      ? rect.left - position.dx
+      : position.dx > rect.right
+          ? position.dx - rect.right
+          : 0.0;
+  final dy = position.dy < rect.top
+      ? rect.top - position.dy
+      : position.dy > rect.bottom
+          ? position.dy - rect.bottom
+          : 0.0;
+  return dx * dx + dy * dy;
+}
+
+double _displayScaleFactor(Display display) {
+  final scaleFactor = display.scaleFactor?.toDouble() ?? 1;
+  return scaleFactor <= 0 ? 1 : scaleFactor;
+}
+
+double _currentWindowScaleFactor() {
+  final views = WidgetsBinding.instance.platformDispatcher.views;
+  if (views.isEmpty) {
+    return 1;
+  }
+
+  final scaleFactor = views.first.devicePixelRatio;
+  return scaleFactor <= 0 ? 1 : scaleFactor;
 }
 
 class RgsSensorPanelApp extends StatelessWidget {
@@ -826,8 +926,16 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     }
 
     final position = await windowManager.getPosition();
+    final scaleFactor = _currentWindowScaleFactor();
     final settings = RgsPanelSettings.load();
-    settings.setWidgetPosition(widget.kind.settingId, position.dx, position.dy);
+    settings.setWidgetPosition(
+      widget.kind.settingId,
+      position.dx,
+      position.dy,
+      physicalLeft: position.dx * scaleFactor,
+      physicalTop: position.dy * scaleFactor,
+      scaleFactor: scaleFactor,
+    );
     settings.save();
     _settings = settings;
   }

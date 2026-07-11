@@ -5,16 +5,32 @@ final class RgsWidgetPosition {
   const RgsWidgetPosition({
     required this.left,
     required this.top,
+    this.physicalLeft,
+    this.physicalTop,
+    this.scaleFactor,
   });
 
   final double left;
   final double top;
+  final double? physicalLeft;
+  final double? physicalTop;
+  final double? scaleFactor;
 
   Map<String, double> toJson() {
-    return {
+    final json = {
       'Left': left,
       'Top': top,
     };
+    if (physicalLeft != null) {
+      json['PhysicalLeft'] = physicalLeft!;
+    }
+    if (physicalTop != null) {
+      json['PhysicalTop'] = physicalTop!;
+    }
+    if (scaleFactor != null) {
+      json['ScaleFactor'] = scaleFactor!;
+    }
+    return json;
   }
 
   static RgsWidgetPosition? fromJson(Object? value) {
@@ -24,11 +40,26 @@ final class RgsWidgetPosition {
 
     final left = RgsPanelSettings._asDouble(value['Left'] ?? value['left']);
     final top = RgsPanelSettings._asDouble(value['Top'] ?? value['top']);
+    final physicalLeft = RgsPanelSettings._asDouble(
+      value['PhysicalLeft'] ?? value['physicalLeft'],
+    );
+    final physicalTop = RgsPanelSettings._asDouble(
+      value['PhysicalTop'] ?? value['physicalTop'],
+    );
+    final scaleFactor = RgsPanelSettings._asDouble(
+      value['ScaleFactor'] ?? value['scaleFactor'],
+    );
     if (left == null || top == null) {
       return null;
     }
 
-    return RgsWidgetPosition(left: left, top: top);
+    return RgsWidgetPosition(
+      left: left,
+      top: top,
+      physicalLeft: physicalLeft,
+      physicalTop: physicalTop,
+      scaleFactor: scaleFactor,
+    );
   }
 }
 
@@ -135,8 +166,21 @@ final class RgsPanelSettings {
     return widgetPositions[_normalizeId(id)];
   }
 
-  void setWidgetPosition(String id, double left, double top) {
-    widgetPositions[_normalizeId(id)] = RgsWidgetPosition(left: left, top: top);
+  void setWidgetPosition(
+    String id,
+    double left,
+    double top, {
+    double? physicalLeft,
+    double? physicalTop,
+    double? scaleFactor,
+  }) {
+    widgetPositions[_normalizeId(id)] = RgsWidgetPosition(
+      left: left,
+      top: top,
+      physicalLeft: physicalLeft,
+      physicalTop: physicalTop,
+      scaleFactor: scaleFactor,
+    );
   }
 
   void setVisible(String id, bool isVisible) {
