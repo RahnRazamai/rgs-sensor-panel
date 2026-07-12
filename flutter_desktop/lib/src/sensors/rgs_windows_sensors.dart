@@ -262,11 +262,11 @@ final class RgsWindowsSensors {
   }
 
   Future<RgsSensorSnapshot> _readBackendSnapshot() async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 1);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
       final uri = Uri.parse('http://127.0.0.1:$backendPort/data.json');
       final request = await client.getUrl(uri);
-      final response = await request.close().timeout(const Duration(seconds: 2));
+      final response = await request.close().timeout(const Duration(seconds: 4));
       if (response.statusCode != HttpStatus.ok) {
         return RgsSensorSnapshot.unavailable('RGS backend returned HTTP ${response.statusCode}.');
       }

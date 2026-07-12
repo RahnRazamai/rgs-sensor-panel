@@ -40,8 +40,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "..\flutter_desktop\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.exp,*.lib,*.pdb"
 
 [Icons]
-Name: "{group}\RGS Sensor Panel"; Filename: "{app}\{#AppExeName}"
-Name: "{commondesktop}\RGS Sensor Panel"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{group}\RGS Sensor Panel"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0
+Name: "{commondesktop}\RGS Sensor Panel"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch RGS Sensor Panel"; Flags: nowait postinstall skipifsilent

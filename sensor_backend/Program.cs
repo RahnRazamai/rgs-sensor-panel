@@ -115,10 +115,13 @@ internal static class Program
 
 internal sealed class SensorMonitor : IDisposable
 {
+    private static readonly TimeSpan SnapshotCacheDuration = TimeSpan.FromSeconds(1);
     private readonly object _gate = new();
     private readonly Computer _computer;
     private readonly Dictionary<string, StorageCounterSet> _storageCounters = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Lazy<MemoryModuleSummary> MemoryModuleSummary = new(ReadMemoryModuleSummary);
+    private string? _cachedSnapshotJson;
+    private DateTime _cachedSnapshotAtUtc = DateTime.MinValue;
     private bool _opened;
 
     public SensorMonitor()
@@ -154,36 +157,49 @@ internal sealed class SensorMonitor : IDisposable
     {
         lock (_gate)
         {
-            try
+            var now = DateTime.UtcNow;
+            if (_cachedSnapshotJson != null && now - _cachedSnapshotAtUtc < SnapshotCacheDuration)
             {
-                if (!_opened)
-                {
-                    Open();
-                }
-
-                var sensors = new List<SensorReading>();
-                foreach (var hardware in _computer.Hardware)
-                {
-                    ReadHardware(hardware, sensors);
-                }
-
-                return Json.BuildSnapshot(
-                    true,
-                    null,
-                    sensors,
-                    ReadSystemMemory(),
-                    ReadStorageDevices());
+                return _cachedSnapshotJson;
             }
-            catch (Exception error)
+
+            _cachedSnapshotJson = BuildSnapshotJson();
+            _cachedSnapshotAtUtc = now;
+            return _cachedSnapshotJson;
+        }
+    }
+
+    private string BuildSnapshotJson()
+    {
+        try
+        {
+            if (!_opened)
             {
-                Log.Write(error);
-                return Json.BuildSnapshot(
-                    false,
-                    error.Message,
-                    Array.Empty<SensorReading>(),
-                    null,
-                    Array.Empty<StorageDeviceReading>());
+                Open();
             }
+
+            var sensors = new List<SensorReading>();
+            foreach (var hardware in _computer.Hardware)
+            {
+                ReadHardware(hardware, sensors);
+            }
+
+            return Json.BuildSnapshot(
+                true,
+                null,
+                sensors,
+                ReadSystemMemory(),
+                ReadStorageDevices());
+        }
+        catch (Exception error)
+        {
+            Log.Write(error);
+            return Json.BuildSnapshot(
+                false,
+                error.Message,
+                Array.Empty<SensorReading>(),
+                null,
+                Array.Empty<StorageDeviceReading>());
         }
     }
 

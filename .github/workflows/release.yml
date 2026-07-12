@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -125,24 +127,58 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          @"
-          # RGS Sensor Panel $tag
+          $repo = "${{ github.repository }}"
+          $serverUrl = "${{ github.server_url }}"
+          $currentCommit = (git rev-list -n 1 $tag).Trim()
+          $previousTag = ""
 
-          ## Changes
-          - Flutter Windows UI for Rainmeter-style CPU, RAM, GPU, SSD, and date/time widgets.
-          - Grouped GPU and SSD widgets with per-device show/hide controls.
-          - Control panel for widget visibility, tray behavior, widget opacity, always-on-top, and auto launch on boot.
-          - Support panel with Ko-fi, YouTube, and GitHub Sponsor links.
-          - Bundled C# LibreHardwareMonitor-based backend for temperature, power, and clock readings.
+          try {
+            $previousTag = (git describe --tags --abbrev=0 "$currentCommit^" 2>$null).Trim()
+          }
+          catch {
+            $previousTag = ""
+          }
 
-          ## Downloads
-          - Installer: ``$env:INSTALLER_NAME``
-          - Portable zip: ``$env:ZIP_NAME``
+          if ($previousTag) {
+            $range = "$previousTag..$currentCommit"
+            $rangeLabel = "$previousTag...$tag"
+            $compareUrl = "$serverUrl/$repo/compare/$previousTag...$tag"
+          }
+          else {
+            $range = $currentCommit
+            $rangeLabel = $tag
+            $compareUrl = "$serverUrl/$repo/releases/tag/$tag"
+          }
 
-          ## Notes
-          - The app is built for Windows and ships as a Flutter desktop app with the backend bundled beside it.
-          - Hardware sensor access may ask for Windows administrator approval once when enabled in the app.
-          "@ | Set-Content -Path release-notes.md
+          $commits = @(git log --pretty=format:"- %s (%h)" $range)
+          if ($commits.Count -eq 0) {
+            $commits = @("- No commit changes found for this release.")
+          }
+
+          $notes = @(
+            "# RGS Sensor Panel $tag",
+            "",
+            "## Changes",
+            "",
+            "Changes included in ``$rangeLabel``:",
+            ""
+          )
+          $notes += $commits
+          $notes += @(
+            "",
+            "## Downloads",
+            "- Installer: ``$env:INSTALLER_NAME``",
+            "- Portable zip: ``$env:ZIP_NAME``",
+            "",
+            "## Full Changelog",
+            "- $compareUrl",
+            "",
+            "## Notes",
+            "- The app is built for Windows and ships as a Flutter desktop app with the backend bundled beside it.",
+            "- Hardware sensor access may ask for Windows administrator approval once when enabled in the app."
+          )
+
+          $notes | Set-Content -Path release-notes.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -159,4 +195,3 @@ jobs:
             ${{ env.ZIP_NAME }}
             installer-output/${{ env.INSTALLER_NAME }}
           body_path: release-notes.md
-          generate_release_notes: true

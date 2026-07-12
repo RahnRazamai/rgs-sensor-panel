@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:screen_retriever/screen_retriever.dart';
@@ -18,12 +20,16 @@ const String githubSponsorUrl = 'https://github.com/sponsors/RahnRazamai';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
 
-  final widgetKind = RgsWidgetKind.fromArgs(args);
-  final startHidden = widgetKind == null && args.contains('--rgs-startup');
+  final launchConfig = await _readLaunchConfig(args);
+  final widgetKind = launchConfig.widgetKind;
+  final startHidden = launchConfig.startHidden;
+  if (widgetKind == null) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
+
   await _configureNativeWindow(widgetKind, startHidden: startHidden);
 
   runApp(
@@ -32,6 +38,65 @@ Future<void> main(List<String> args) async {
       startHidden: startHidden,
     ),
   );
+}
+
+final class RgsLaunchConfig {
+  const RgsLaunchConfig({
+    required this.widgetKind,
+    required this.startHidden,
+  });
+
+  final RgsWidgetKind? widgetKind;
+  final bool startHidden;
+}
+
+Future<RgsLaunchConfig> _readLaunchConfig(List<String> args) async {
+  var widgetKind = RgsWidgetKind.fromArgs(args);
+  final startHidden = widgetKind == null && args.contains('--rgs-startup');
+
+  if (Platform.isWindows) {
+    try {
+      final controller = await WindowController.fromCurrentEngine();
+      widgetKind = _widgetKindFromWindowArguments(controller.arguments) ?? widgetKind;
+    } on Object {
+      // Command-line arguments are still enough for normal startup and tests.
+    }
+  }
+
+  return RgsLaunchConfig(
+    widgetKind: widgetKind,
+    startHidden: startHidden,
+  );
+}
+
+String _widgetWindowArguments(RgsWidgetKind kind) {
+  return jsonEncode({
+    'type': 'widget',
+    'kind': kind.id,
+  });
+}
+
+RgsWidgetKind? _widgetKindFromWindowArguments(String arguments) {
+  if (arguments.trim().isEmpty) {
+    return null;
+  }
+
+  try {
+    final decoded = jsonDecode(arguments);
+    if (decoded is Map && decoded['type'] == 'widget') {
+      return RgsWidgetKind.fromId(decoded['kind']?.toString() ?? '');
+    }
+  } on Object {
+    return null;
+  }
+
+  return null;
+}
+
+extension RgsWindowControllerCommands on WindowController {
+  Future<void> closeWidgetWindow() {
+    return invokeMethod<void>('window_close');
+  }
 }
 
 Future<void> _configureNativeWindow(
@@ -63,6 +128,9 @@ Future<void> _configureNativeWindow(
       await windowManager.setAlwaysOnTop(settings.alwaysOnTop);
       await windowManager.setOpacity(settings.widgetOpacity);
       if (savedWidgetPosition != null) {
+        if (savedWidgetPosition.size != null) {
+          await windowManager.setSize(savedWidgetPosition.size!);
+        }
         await windowManager.setPosition(
           await _restoreWidgetPosition(savedWidgetPosition),
         );
@@ -124,6 +192,16 @@ Future<Offset?> _restoreLegacyWidgetPosition(
     );
   } on Object {
     return null;
+  }
+}
+
+extension RgsWidgetPositionSize on RgsWidgetPosition {
+  Size? get size {
+    if (width == null || height == null) {
+      return null;
+    }
+
+    return Size(width!, height!);
   }
 }
 
@@ -306,14 +384,15 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     with WindowListener, TrayListener {
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
   RgsPanelSettings _settings = RgsPanelSettings.load();
-  final Map<RgsWidgetKind, Process> _widgetProcesses = {};
+  final Map<RgsWidgetKind, WindowController> _widgetWindows = {};
   final Set<RgsWidgetKind> _visibleWidgets = {};
-  final Set<RgsWidgetKind> _widgetCloseRequestedByPanel = {};
   final Set<RgsWidgetKind> _pendingWidgetLaunches = {};
+  StreamSubscription<void>? _windowSubscription;
   Timer? _timer;
   bool _enablingSensors = false;
   bool _isQuitting = false;
   bool _launchingPendingWidgets = false;
+  bool _refreshInProgress = false;
 
   @override
   void initState() {
@@ -323,6 +402,9 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       trayManager.addListener(this);
       unawaited(_setupTray());
       unawaited(_syncStartupRegistration());
+      _windowSubscription = onWindowsChanged.listen(
+        (_) => unawaited(_syncWidgetWindowControllers()),
+      );
     }
 
     if (!widget.pollSensors) {
@@ -341,6 +423,7 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   @override
   void dispose() {
     _timer?.cancel();
+    unawaited(_windowSubscription?.cancel());
     if (Platform.isWindows && widget.pollSensors) {
       windowManager.removeListener(this);
       trayManager.removeListener(this);
@@ -383,10 +466,10 @@ class _ControlPanelPageState extends State<ControlPanelPage>
 
   Future<void> _exitApplication() async {
     _isQuitting = true;
-    for (final process in _widgetProcesses.values) {
-      process.kill();
+    for (final controller in _widgetWindows.values.toList()) {
+      await _closeWidgetWindow(controller);
     }
-    _widgetProcesses.clear();
+    _widgetWindows.clear();
     await trayManager.destroy();
     await windowManager.setPreventClose(false);
     await windowManager.close();
@@ -433,17 +516,26 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   }
 
   Future<void> _refresh() async {
-    final snapshot = await RgsWindowsSensors.instance.readSnapshot();
-    final settings = RgsPanelSettings.load();
-    if (!mounted) {
+    if (_refreshInProgress) {
       return;
     }
-    setState(() {
-      _snapshot = snapshot;
-      _settings = settings;
-    });
-    if (snapshot.available) {
-      unawaited(_launchPendingWidgetsIfReady());
+
+    _refreshInProgress = true;
+    try {
+      final snapshot = await RgsWindowsSensors.instance.readSnapshot();
+      final settings = RgsPanelSettings.load();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _snapshot = snapshot;
+        _settings = settings;
+      });
+      if (snapshot.available) {
+        unawaited(_launchPendingWidgetsIfReady());
+      }
+    } finally {
+      _refreshInProgress = false;
     }
   }
 
@@ -467,6 +559,39 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       if (_settings.isVisible(kind.settingId)) {
         await _setWidgetVisible(kind, true, save: false);
       }
+    }
+  }
+
+  Future<void> _syncWidgetWindowControllers() async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    try {
+      final controllers = await WindowController.getAll();
+      final widgetWindows = <RgsWidgetKind, WindowController>{};
+      for (final controller in controllers) {
+        final kind = _widgetKindFromWindowArguments(controller.arguments);
+        if (kind != null) {
+          widgetWindows[kind] = controller;
+        }
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _widgetWindows
+          ..clear()
+          ..addAll(widgetWindows);
+        _visibleWidgets
+          ..clear()
+          ..addAll(widgetWindows.keys);
+        _settings = RgsPanelSettings.load();
+      });
+    } on Object {
+      // The next window event or refresh will try again.
     }
   }
 
@@ -508,40 +633,47 @@ class _ControlPanelPageState extends State<ControlPanelPage>
         return;
       }
 
-      if (_widgetProcesses.containsKey(kind)) {
+      if (_widgetWindows.containsKey(kind)) {
         setState(() => _visibleWidgets.add(kind));
         return;
       }
 
-      final process = await Process.start(
-        Platform.resolvedExecutable,
-        ['--rgs-widget', kind.id],
-        workingDirectory: File(Platform.resolvedExecutable).parent.path,
+      final controller = await WindowController.create(
+        WindowConfiguration(
+          arguments: _widgetWindowArguments(kind),
+          hiddenAtLaunch: true,
+        ),
       );
-      _widgetProcesses[kind] = process;
-      unawaited(
-        process.exitCode.then((_) {
-          _widgetProcesses.remove(kind);
-          _widgetCloseRequestedByPanel.remove(kind);
-          if (mounted) {
-            setState(() {
-              _settings = RgsPanelSettings.load();
-              _visibleWidgets.remove(kind);
-            });
-          }
-        }),
-      );
-      setState(() => _visibleWidgets.add(kind));
+      setState(() {
+        _widgetWindows[kind] = controller;
+        _visibleWidgets.add(kind);
+      });
       return;
     }
 
     _pendingWidgetLaunches.remove(kind);
-    final process = _widgetProcesses.remove(kind);
-    if (process != null) {
-      _widgetCloseRequestedByPanel.add(kind);
-      process.kill();
+    final controller = _widgetWindows.remove(kind);
+    if (controller != null) {
+      await _closeWidgetWindow(controller);
     }
     setState(() => _visibleWidgets.remove(kind));
+  }
+
+  Future<void> _closeWidgetWindow(WindowController controller) async {
+    for (var attempt = 0; attempt < 5; attempt++) {
+      try {
+        await controller.closeWidgetWindow();
+        return;
+      } on Object {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
+    try {
+      await controller.hide();
+    } on Object {
+      // The window may already be gone.
+    }
   }
 
   Future<void> _showAll() async {
@@ -768,19 +900,34 @@ class WidgetWindowPage extends StatefulWidget {
 
 class _WidgetWindowPageState extends State<WidgetWindowPage>
     with WindowListener {
+  static const _maxMissedRefreshesBeforeLoading = 4;
+
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
   RgsPanelSettings _settings = RgsPanelSettings.load();
   Timer? _timer;
   bool _showVisibilityPanel = false;
   Size? _lastAppliedSize;
+  bool _applyingWindowSize = false;
+  bool _refreshInProgress = false;
+  int _missedRefreshes = 0;
+  WindowController? _windowController;
 
   @override
   void initState() {
     super.initState();
     if (Platform.isWindows && widget.pollSensors) {
       windowManager.addListener(this);
+      unawaited(_setupWindowController());
     }
     if (!widget.pollSensors) {
+      return;
+    }
+    if (!widget.kind.requiresSensors) {
+      unawaited(_refreshClock());
+      _timer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => unawaited(_refreshClock()),
+      );
       return;
     }
     _refresh();
@@ -790,23 +937,85 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   @override
   void dispose() {
     _timer?.cancel();
+    unawaited(_windowController?.setWindowMethodHandler(null));
     if (Platform.isWindows && widget.pollSensors) {
       windowManager.removeListener(this);
     }
     super.dispose();
   }
 
+  Future<void> _setupWindowController() async {
+    try {
+      final controller = await WindowController.fromCurrentEngine();
+      _windowController = controller;
+      await controller.setWindowMethodHandler((call) async {
+        if (call.method == 'window_close') {
+          await windowManager.close();
+        }
+        return null;
+      });
+    } on Object {
+      // Standalone --rgs-widget launches do not need cross-window commands.
+    }
+  }
+
   @override
   void onWindowMoved() {
-    unawaited(_saveWidgetPosition());
+    unawaited(_saveWidgetPlacement());
+  }
+
+  @override
+  void onWindowResized() {
+    if (_applyingWindowSize) {
+      return;
+    }
+
+    unawaited(_saveWidgetPlacement());
   }
 
   Future<void> _refresh() async {
-    final snapshot = await RgsWindowsSensors.instance.readSnapshot();
+    if (_refreshInProgress) {
+      return;
+    }
+
+    _refreshInProgress = true;
+    try {
+      final snapshot = await RgsWindowsSensors.instance.readSnapshot(
+        tryStartExistingTask: false,
+      );
+      final settings = RgsPanelSettings.load();
+      if (!mounted) {
+        return;
+      }
+
+      final shouldShowSnapshot = snapshot.available ||
+          !_snapshot.available ||
+          _missedRefreshes >= _maxMissedRefreshesBeforeLoading;
+      final displaySnapshot = shouldShowSnapshot ? snapshot : _snapshot;
+      setState(() {
+        if (snapshot.available) {
+          _missedRefreshes = 0;
+        } else {
+          _missedRefreshes++;
+        }
+        if (shouldShowSnapshot) {
+          _snapshot = snapshot;
+        }
+        _settings = settings;
+      });
+      await _applyWindowPreferences(settings, displaySnapshot);
+    } finally {
+      _refreshInProgress = false;
+    }
+  }
+
+  Future<void> _refreshClock() async {
     final settings = RgsPanelSettings.load();
+    final snapshot = RgsSensorSnapshot.unavailable('Clock ready');
     if (!mounted) {
       return;
     }
+
     setState(() {
       _snapshot = snapshot;
       _settings = settings;
@@ -833,8 +1042,8 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanStart: (_) => windowManager.startDragging(),
-                  onPanEnd: (_) => unawaited(_saveWidgetPosition()),
-                  onPanCancel: () => unawaited(_saveWidgetPosition()),
+                  onPanEnd: (_) => unawaited(_saveWidgetPlacement()),
+                  onPanCancel: () => unawaited(_saveWidgetPlacement()),
                   child: Container(
                     height: 34,
                     padding: const EdgeInsets.only(left: 12, right: 6),
@@ -935,13 +1144,20 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
 
     await windowManager.setAlwaysOnTop(settings.alwaysOnTop);
     await windowManager.setOpacity(settings.widgetOpacity);
-    final targetSize = _targetWidgetSize(snapshot);
+    final savedSize = settings.widgetPosition(widget.kind.settingId)?.size;
+    final targetSize = savedSize ?? _targetWidgetSize(snapshot);
     if (_lastAppliedSize == targetSize) {
       return;
     }
 
     _lastAppliedSize = targetSize;
-    await windowManager.setSize(targetSize);
+    _applyingWindowSize = true;
+    try {
+      await windowManager.setSize(targetSize);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    } finally {
+      _applyingWindowSize = false;
+    }
   }
 
   Size _targetWidgetSize(RgsSensorSnapshot snapshot) {
@@ -968,28 +1184,32 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     unawaited(_applyWindowPreferences(_settings, _snapshot));
   }
 
-  Future<void> _saveWidgetPosition() async {
+  Future<void> _saveWidgetPlacement() async {
     if (!Platform.isWindows) {
       return;
     }
 
     final position = await windowManager.getPosition();
+    final size = await windowManager.getSize();
     final scaleFactor = _currentWindowScaleFactor();
     final settings = RgsPanelSettings.load();
     settings.setWidgetPosition(
       widget.kind.settingId,
       position.dx,
       position.dy,
+      width: size.width,
+      height: size.height,
       physicalLeft: position.dx * scaleFactor,
       physicalTop: position.dy * scaleFactor,
       scaleFactor: scaleFactor,
     );
     settings.save();
     _settings = settings;
+    _lastAppliedSize = size;
   }
 
   Future<void> _hideThisWidget() async {
-    await _saveWidgetPosition();
+    await _saveWidgetPlacement();
     _settings.setVisible(widget.kind.settingId, false);
     _settings.save();
     await windowManager.close();

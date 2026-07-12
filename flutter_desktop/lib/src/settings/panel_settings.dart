@@ -5,6 +5,8 @@ final class RgsWidgetPosition {
   const RgsWidgetPosition({
     required this.left,
     required this.top,
+    this.width,
+    this.height,
     this.physicalLeft,
     this.physicalTop,
     this.scaleFactor,
@@ -12,6 +14,8 @@ final class RgsWidgetPosition {
 
   final double left;
   final double top;
+  final double? width;
+  final double? height;
   final double? physicalLeft;
   final double? physicalTop;
   final double? scaleFactor;
@@ -21,6 +25,12 @@ final class RgsWidgetPosition {
       'Left': left,
       'Top': top,
     };
+    if (width != null) {
+      json['Width'] = width!;
+    }
+    if (height != null) {
+      json['Height'] = height!;
+    }
     if (physicalLeft != null) {
       json['PhysicalLeft'] = physicalLeft!;
     }
@@ -40,6 +50,8 @@ final class RgsWidgetPosition {
 
     final left = RgsPanelSettings._asDouble(value['Left'] ?? value['left']);
     final top = RgsPanelSettings._asDouble(value['Top'] ?? value['top']);
+    final width = RgsPanelSettings._asDouble(value['Width'] ?? value['width']);
+    final height = RgsPanelSettings._asDouble(value['Height'] ?? value['height']);
     final physicalLeft = RgsPanelSettings._asDouble(
       value['PhysicalLeft'] ?? value['physicalLeft'],
     );
@@ -56,6 +68,8 @@ final class RgsWidgetPosition {
     return RgsWidgetPosition(
       left: left,
       top: top,
+      width: width,
+      height: height,
       physicalLeft: physicalLeft,
       physicalTop: physicalTop,
       scaleFactor: scaleFactor,
@@ -170,6 +184,8 @@ final class RgsPanelSettings {
     String id,
     double left,
     double top, {
+    double? width,
+    double? height,
     double? physicalLeft,
     double? physicalTop,
     double? scaleFactor,
@@ -177,6 +193,8 @@ final class RgsPanelSettings {
     widgetPositions[_normalizeId(id)] = RgsWidgetPosition(
       left: left,
       top: top,
+      width: width,
+      height: height,
       physicalLeft: physicalLeft,
       physicalTop: physicalTop,
       scaleFactor: scaleFactor,
