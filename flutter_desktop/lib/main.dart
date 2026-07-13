@@ -13,10 +13,15 @@ import 'firebase_options.dart';
 import 'src/settings/panel_settings.dart';
 import 'src/settings/startup_registration.dart';
 import 'src/sensors/rgs_windows_sensors.dart';
+import 'src/windows/windows_idle.dart';
 
 const String koFiSupportUrl = 'https://ko-fi.com/rahngamingstudio';
 const String youtubeSupportUrl = 'https://www.youtube.com/@rahngamingstudio';
 const String githubSponsorUrl = 'https://github.com/sponsors/RahnRazamai';
+const Duration widgetActiveRefreshInterval = Duration(seconds: 1);
+const Duration widgetIdleRefreshInterval = Duration(seconds: 5);
+const Duration widgetDisplayTimeoutLead = Duration(seconds: 15);
+const Duration widgetFallbackPauseAfterIdle = Duration(seconds: 45);
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -260,6 +265,46 @@ double _currentWindowScaleFactor() {
   return scaleFactor <= 0 ? 1 : scaleFactor;
 }
 
+bool _shouldPauseUiRefreshForIdle() {
+  if (!Platform.isWindows) {
+    return false;
+  }
+
+  try {
+    final pauseAfter = _pauseRefreshAfterIdle();
+    return pauseAfter != null && WindowsIdle.idleDuration() >= pauseAfter;
+  } on Object {
+    return false;
+  }
+}
+
+Duration? _pauseRefreshAfterIdle() {
+  final displayTimeout = WindowsIdle.displayIdleTimeout();
+  if (displayTimeout == Duration.zero) {
+    return null;
+  }
+  if (displayTimeout == null) {
+    return widgetFallbackPauseAfterIdle;
+  }
+
+  final timeoutSeconds = displayTimeout.inSeconds;
+  if (timeoutSeconds <= 0) {
+    return null;
+  }
+
+  var thresholdSeconds = timeoutSeconds > widgetDisplayTimeoutLead.inSeconds * 2
+      ? timeoutSeconds - widgetDisplayTimeoutLead.inSeconds
+      : (timeoutSeconds * 0.75).round();
+  if (thresholdSeconds < 1) {
+    thresholdSeconds = 1;
+  }
+  if (thresholdSeconds > timeoutSeconds) {
+    thresholdSeconds = timeoutSeconds;
+  }
+
+  return Duration(seconds: thresholdSeconds);
+}
+
 class RgsSensorPanelApp extends StatelessWidget {
   const RgsSensorPanelApp({
     super.key,
@@ -410,14 +455,13 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     if (!widget.pollSensors) {
       return;
     }
-    _refresh();
+    unawaited(_runRefreshTick());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.startHidden) {
         unawaited(_hideToTray());
       }
       unawaited(_launchConfiguredWidgets());
     });
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
   }
 
   @override
@@ -537,6 +581,30 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     } finally {
       _refreshInProgress = false;
     }
+  }
+
+  Future<void> _runRefreshTick() async {
+    if (!mounted || !widget.pollSensors) {
+      return;
+    }
+
+    final pausedForIdle = _shouldPauseUiRefreshForIdle();
+    if (!pausedForIdle) {
+      await _refresh();
+    }
+
+    _scheduleRefreshTick(
+      pausedForIdle ? widgetIdleRefreshInterval : widgetActiveRefreshInterval,
+    );
+  }
+
+  void _scheduleRefreshTick(Duration delay) {
+    _timer?.cancel();
+    if (!mounted || !widget.pollSensors) {
+      return;
+    }
+
+    _timer = Timer(delay, () => unawaited(_runRefreshTick()));
   }
 
   Future<void> _enableSensors() async {
@@ -922,16 +990,7 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     if (!widget.pollSensors) {
       return;
     }
-    if (!widget.kind.requiresSensors) {
-      unawaited(_refreshClock());
-      _timer = Timer.periodic(
-        const Duration(seconds: 1),
-        (_) => unawaited(_refreshClock()),
-      );
-      return;
-    }
-    _refresh();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+    unawaited(_runWidgetTick());
   }
 
   @override
@@ -1021,6 +1080,34 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       _settings = settings;
     });
     await _applyWindowPreferences(settings, snapshot);
+  }
+
+  Future<void> _runWidgetTick() async {
+    if (!mounted || !widget.pollSensors) {
+      return;
+    }
+
+    final pausedForIdle = _shouldPauseUiRefreshForIdle();
+    if (!pausedForIdle) {
+      if (widget.kind.requiresSensors) {
+        await _refresh();
+      } else {
+        await _refreshClock();
+      }
+    }
+
+    _scheduleWidgetTick(
+      pausedForIdle ? widgetIdleRefreshInterval : widgetActiveRefreshInterval,
+    );
+  }
+
+  void _scheduleWidgetTick(Duration delay) {
+    _timer?.cancel();
+    if (!mounted || !widget.pollSensors) {
+      return;
+    }
+
+    _timer = Timer(delay, () => unawaited(_runWidgetTick()));
   }
 
   @override
