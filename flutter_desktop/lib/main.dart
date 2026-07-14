@@ -1063,6 +1063,7 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
         _settings = settings;
       });
       await _applyWindowPreferences(settings, displaySnapshot);
+      await _syncManualWidgetPlacement(settings, displaySnapshot);
     } finally {
       _refreshInProgress = false;
     }
@@ -1080,6 +1081,7 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       _settings = settings;
     });
     await _applyWindowPreferences(settings, snapshot);
+    await _syncManualWidgetPlacement(settings, snapshot);
   }
 
   Future<void> _runWidgetTick() async {
@@ -1245,6 +1247,29 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     } finally {
       _applyingWindowSize = false;
     }
+  }
+
+  Future<void> _syncManualWidgetPlacement(
+    RgsPanelSettings settings,
+    RgsSensorSnapshot snapshot,
+  ) async {
+    if (!Platform.isWindows || _applyingWindowSize) {
+      return;
+    }
+
+    final expectedSize =
+        settings.widgetPosition(widget.kind.settingId)?.size ??
+            _targetWidgetSize(snapshot);
+    final currentSize = await windowManager.getSize();
+    if (_isCloseSize(currentSize, expectedSize)) {
+      return;
+    }
+
+    await _saveWidgetPlacement();
+  }
+
+  bool _isCloseSize(Size a, Size b) {
+    return (a.width - b.width).abs() < 1 && (a.height - b.height).abs() < 1;
   }
 
   Size _targetWidgetSize(RgsSensorSnapshot snapshot) {
