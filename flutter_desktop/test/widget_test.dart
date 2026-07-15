@@ -21,6 +21,12 @@ void main() {
     expect(find.text('RGS SENSOR PANEL'), findsOneWidget);
     expect(find.text('Widget opacity'), findsOneWidget);
     expect(find.text('WIDGETS'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Music player'),
+      160,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Music player'), findsOneWidget);
     expect(find.text('Use 24-hour time'), findsNothing);
   });
 
@@ -36,5 +42,22 @@ void main() {
 
     expect(find.text('CPU'), findsOneWidget);
     expect(find.text('Loading sensors'), findsOneWidget);
+  });
+
+  testWidgets('widget window renders music view without sensors', (
+    WidgetTester tester,
+  ) async {
+    useLargeSurface(tester);
+
+    await tester.pumpWidget(
+      const RgsSensorPanelApp(
+        widgetKind: RgsWidgetKind.music,
+        pollSensors: false,
+      ),
+    );
+
+    expect(find.text('MUSIC'), findsOneWidget);
+    expect(find.text('Finding media'), findsOneWidget);
+    expect(find.text('Loading sensors'), findsNothing);
   });
 }

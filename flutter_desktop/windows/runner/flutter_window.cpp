@@ -5,6 +5,7 @@
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "rgs_media_controller.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -32,8 +33,14 @@ bool FlutterWindow::OnCreate() {
         auto* flutter_view_controller =
             reinterpret_cast<flutter::FlutterViewController*>(controller);
         RegisterPlugins(flutter_view_controller->engine());
+        RgsMediaControllerRegisterWithRegistrar(
+            flutter_view_controller->engine()->GetRegistrarForPlugin(
+                "RgsMediaController"));
       });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  RgsMediaControllerRegisterWithRegistrar(
+      flutter_controller_->engine()->GetRegistrarForPlugin(
+          "RgsMediaController"));
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

@@ -10,6 +10,8 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'firebase_options.dart';
+import 'src/media/music_player_widget.dart';
+import 'src/media/rgs_windows_media.dart';
 import 'src/settings/panel_settings.dart';
 import 'src/settings/startup_registration.dart';
 import 'src/sensors/rgs_windows_sensors.dart';
@@ -62,7 +64,8 @@ Future<RgsLaunchConfig> _readLaunchConfig(List<String> args) async {
   if (Platform.isWindows) {
     try {
       final controller = await WindowController.fromCurrentEngine();
-      widgetKind = _widgetKindFromWindowArguments(controller.arguments) ?? widgetKind;
+      widgetKind =
+          _widgetKindFromWindowArguments(controller.arguments) ?? widgetKind;
     } on Object {
       // Command-line arguments are still enough for normal startup and tests.
     }
@@ -115,9 +118,8 @@ Future<void> _configureNativeWindow(
   await windowManager.ensureInitialized();
   final isWidget = widgetKind != null;
   final settings = RgsPanelSettings.load();
-  final savedWidgetPosition = widgetKind == null
-      ? null
-      : settings.widgetPosition(widgetKind.settingId);
+  final savedWidgetPosition =
+      widgetKind == null ? null : settings.widgetPosition(widgetKind.settingId);
   final options = WindowOptions(
     size: isWidget ? const Size(320, 210) : const Size(420, 640),
     minimumSize: isWidget ? const Size(292, 188) : const Size(380, 520),
@@ -311,11 +313,13 @@ class RgsSensorPanelApp extends StatelessWidget {
     required this.widgetKind,
     this.startHidden = false,
     this.pollSensors = true,
+    this.mediaController,
   });
 
   final RgsWidgetKind? widgetKind;
   final bool startHidden;
   final bool pollSensors;
+  final RgsMediaController? mediaController;
 
   @override
   Widget build(BuildContext context) {
@@ -327,16 +331,19 @@ class RgsSensorPanelApp extends StatelessWidget {
           seedColor: const Color(0xFF4ED6B8),
           brightness: Brightness.dark,
         ),
-        scaffoldBackgroundColor: widgetKind == null
-            ? const Color(0xFF111111)
-            : Colors.transparent,
+        scaffoldBackgroundColor:
+            widgetKind == null ? const Color(0xFF111111) : Colors.transparent,
       ),
       home: widgetKind == null
           ? ControlPanelPage(
               pollSensors: pollSensors,
               startHidden: startHidden,
             )
-          : WidgetWindowPage(kind: widgetKind!, pollSensors: pollSensors),
+          : WidgetWindowPage(
+              kind: widgetKind!,
+              pollSensors: pollSensors,
+              mediaController: mediaController,
+            ),
     );
   }
 }
@@ -346,7 +353,8 @@ enum RgsWidgetKind {
   ram,
   gpu,
   ssd,
-  time;
+  time,
+  music;
 
   static RgsWidgetKind? fromArgs(List<String> args) {
     for (var index = 0; index < args.length - 1; index++) {
@@ -368,7 +376,16 @@ enum RgsWidgetKind {
 
   String get id => name;
 
-  bool get requiresSensors => this != RgsWidgetKind.time;
+  bool get requiresSensors {
+    return switch (this) {
+      RgsWidgetKind.cpu ||
+      RgsWidgetKind.ram ||
+      RgsWidgetKind.gpu ||
+      RgsWidgetKind.ssd =>
+        true,
+      RgsWidgetKind.time || RgsWidgetKind.music => false,
+    };
+  }
 
   String get settingId {
     return switch (this) {
@@ -377,6 +394,7 @@ enum RgsWidgetKind {
       RgsWidgetKind.gpu => RgsPanelSettings.gpuWidgetId,
       RgsWidgetKind.ssd => RgsPanelSettings.storageWidgetId,
       RgsWidgetKind.time => RgsPanelSettings.clockWidgetId,
+      RgsWidgetKind.music => RgsPanelSettings.musicWidgetId,
     };
   }
 
@@ -387,6 +405,7 @@ enum RgsWidgetKind {
       RgsWidgetKind.gpu => 'GPU',
       RgsWidgetKind.ssd => 'SSD',
       RgsWidgetKind.time => 'Date and time',
+      RgsWidgetKind.music => 'Music player',
     };
   }
 
@@ -397,6 +416,7 @@ enum RgsWidgetKind {
       RgsWidgetKind.gpu => 'GPU',
       RgsWidgetKind.ssd => 'SSD',
       RgsWidgetKind.time => 'TIME',
+      RgsWidgetKind.music => 'MUSIC',
     };
   }
 
@@ -407,6 +427,7 @@ enum RgsWidgetKind {
       RgsWidgetKind.gpu => const Color(0xFF8FB8FF),
       RgsWidgetKind.ssd => const Color(0xFFFF6F61),
       RgsWidgetKind.time => const Color(0xFFC9E265),
+      RgsWidgetKind.music => const Color(0xFFD7A6FF),
     };
   }
 }
@@ -883,7 +904,8 @@ class _ControlPanelPageState extends State<ControlPanelPage>
                     _SupportPanel(
                       expanded: _settings.showSupportPanel,
                       onToggle: () => _setPreference(
-                        (settings) => settings.showSupportPanel = !settings.showSupportPanel,
+                        (settings) => settings.showSupportPanel =
+                            !settings.showSupportPanel,
                       ),
                     ),
                   ],
@@ -957,10 +979,12 @@ class WidgetWindowPage extends StatefulWidget {
     super.key,
     required this.kind,
     this.pollSensors = true,
+    this.mediaController,
   });
 
   final RgsWidgetKind kind;
   final bool pollSensors;
+  final RgsMediaController? mediaController;
 
   @override
   State<WidgetWindowPage> createState() => _WidgetWindowPageState();
@@ -971,14 +995,19 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   static const _maxMissedRefreshesBeforeLoading = 4;
 
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
+  RgsMediaSnapshot _mediaSnapshot = const RgsMediaSnapshot.loading();
   RgsPanelSettings _settings = RgsPanelSettings.load();
   Timer? _timer;
   bool _showVisibilityPanel = false;
   Size? _lastAppliedSize;
   bool _applyingWindowSize = false;
   bool _refreshInProgress = false;
+  bool _mediaCommandInProgress = false;
   int _missedRefreshes = 0;
   WindowController? _windowController;
+
+  late final RgsMediaController _mediaController =
+      widget.mediaController ?? RgsWindowsMediaController.instance;
 
   @override
   void initState() {
@@ -1084,17 +1113,64 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     await _syncManualWidgetPlacement(settings, snapshot);
   }
 
+  Future<void> _refreshMedia() async {
+    if (_refreshInProgress) {
+      return;
+    }
+
+    _refreshInProgress = true;
+    try {
+      final mediaSnapshot = await _mediaController.readSnapshot();
+      final settings = RgsPanelSettings.load();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _mediaSnapshot = mediaSnapshot;
+        _settings = settings;
+      });
+      await _applyWindowPreferences(settings, _snapshot);
+      await _syncManualWidgetPlacement(settings, _snapshot);
+    } finally {
+      _refreshInProgress = false;
+    }
+  }
+
+  Future<void> _runMediaCommand(Future<bool> Function() command) async {
+    if (_mediaCommandInProgress) {
+      return;
+    }
+
+    setState(() => _mediaCommandInProgress = true);
+    try {
+      await command();
+      await _refreshMedia();
+    } finally {
+      if (mounted) {
+        setState(() => _mediaCommandInProgress = false);
+      }
+    }
+  }
+
   Future<void> _runWidgetTick() async {
     if (!mounted || !widget.pollSensors) {
       return;
     }
 
-    final pausedForIdle = _shouldPauseUiRefreshForIdle();
+    final pausedForIdle =
+        widget.kind != RgsWidgetKind.music && _shouldPauseUiRefreshForIdle();
     if (!pausedForIdle) {
-      if (widget.kind.requiresSensors) {
-        await _refresh();
-      } else {
-        await _refreshClock();
+      switch (widget.kind) {
+        case RgsWidgetKind.cpu:
+        case RgsWidgetKind.ram:
+        case RgsWidgetKind.gpu:
+        case RgsWidgetKind.ssd:
+          await _refresh();
+        case RgsWidgetKind.time:
+          await _refreshClock();
+        case RgsWidgetKind.music:
+          await _refreshMedia();
       }
     }
 
@@ -1119,65 +1195,76 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: DecoratedBox(
-          decoration: BoxDecoration(
-            color: const Color(0xF2161616),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF343434)),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Column(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanStart: (_) => windowManager.startDragging(),
-                  onPanEnd: (_) => unawaited(_saveWidgetPlacement()),
-                  onPanCancel: () => unawaited(_saveWidgetPlacement()),
-                  child: Container(
-                    height: 34,
-                    padding: const EdgeInsets.only(left: 12, right: 6),
-                    color: const Color(0xFF101010),
-                    child: Row(
-                      children: [
-                        Text(
-                          kind.windowTitle,
-                          style: TextStyle(
-                            color: kind.accent,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0,
-                          ),
+        decoration: BoxDecoration(
+          color: const Color(0xF2161616),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFF343434)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Column(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) => windowManager.startDragging(),
+                onPanEnd: (_) => unawaited(_saveWidgetPlacement()),
+                onPanCancel: () => unawaited(_saveWidgetPlacement()),
+                child: Container(
+                  height: 34,
+                  padding: const EdgeInsets.only(left: 12, right: 6),
+                  color: const Color(0xFF101010),
+                  child: Row(
+                    children: [
+                      Text(
+                        kind.windowTitle,
+                        style: TextStyle(
+                          color: kind.accent,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0,
                         ),
-                        const Spacer(),
-                        if (action != null)
-                          _TinyButton(
-                            label: action.label,
-                            tooltip: action.tooltip,
-                            onPressed: action.onPressed,
-                          ),
+                      ),
+                      const Spacer(),
+                      if (action != null)
                         _TinyButton(
-                          label: 'X',
-                          tooltip: 'Hide',
-                          onPressed: _hideThisWidget,
+                          label: action.label,
+                          tooltip: action.tooltip,
+                          onPressed: action.onPressed,
                         ),
-                      ],
+                      _TinyButton(
+                        label: 'X',
+                        tooltip: 'Hide',
+                        onPressed: _hideThisWidget,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: _WidgetContent(
+                    kind: kind,
+                    snapshot: _snapshot,
+                    mediaSnapshot: _mediaSnapshot,
+                    mediaBusy: _mediaCommandInProgress,
+                    settings: _settings,
+                    showVisibilityPanel: _showVisibilityPanel,
+                    onDeviceVisibilityChanged: _setDeviceVisible,
+                    onPrevious: () => unawaited(
+                      _runMediaCommand(_mediaController.previous),
+                    ),
+                    onTogglePlayPause: () => unawaited(
+                      _runMediaCommand(_mediaController.togglePlayPause),
+                    ),
+                    onNext: () => unawaited(
+                      _runMediaCommand(_mediaController.next),
                     ),
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: _WidgetContent(
-                      kind: kind,
-                      snapshot: _snapshot,
-                      settings: _settings,
-                      showVisibilityPanel: _showVisibilityPanel,
-                      onDeviceVisibilityChanged: _setDeviceVisible,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
+        ),
       ),
     );
   }
@@ -1191,14 +1278,16 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
             : 'Switch to 24-hour time',
         onPressed: () {
           setState(() {
-            _settings.useTwentyFourHourClock = !_settings.useTwentyFourHourClock;
+            _settings.useTwentyFourHourClock =
+                !_settings.useTwentyFourHourClock;
             _settings.save();
           });
         },
       );
     }
 
-    if (kind == RgsWidgetKind.gpu && _snapshot.gpus.where(_isNotGenericGpu).length > 1) {
+    if (kind == RgsWidgetKind.gpu &&
+        _snapshot.gpus.where(_isNotGenericGpu).length > 1) {
       return _WidgetAction(
         label: 'V',
         tooltip: 'Show or hide GPU readings',
@@ -1257,9 +1346,8 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       return;
     }
 
-    final expectedSize =
-        settings.widgetPosition(widget.kind.settingId)?.size ??
-            _targetWidgetSize(snapshot);
+    final expectedSize = settings.widgetPosition(widget.kind.settingId)?.size ??
+        _targetWidgetSize(snapshot);
     final currentSize = await windowManager.getSize();
     if (_isCloseSize(currentSize, expectedSize)) {
       return;
@@ -1277,14 +1365,21 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     if (widget.kind == RgsWidgetKind.gpu) {
       rowCount = _showVisibilityPanel
           ? snapshot.gpus.where(_isNotGenericGpu).length
-          : snapshot.gpus.where((gpu) => _isNotGenericGpu(gpu) && _settings.isVisible(gpu.id)).length;
+          : snapshot.gpus
+              .where(
+                  (gpu) => _isNotGenericGpu(gpu) && _settings.isVisible(gpu.id))
+              .length;
     } else if (widget.kind == RgsWidgetKind.ssd) {
       rowCount = _showVisibilityPanel
           ? snapshot.storage.length
-          : snapshot.storage.where((drive) => _settings.isVisible(drive.id)).length;
+          : snapshot.storage
+              .where((drive) => _settings.isVisible(drive.id))
+              .length;
     }
 
-    final height = rowCount <= 1 ? 210.0 : (92 + rowCount * 106).clamp(220, 560).toDouble();
+    final height = rowCount <= 1
+        ? 210.0
+        : (92 + rowCount * 106).clamp(220, 560).toDouble();
     return Size(320, height);
   }
 
@@ -1332,23 +1427,35 @@ class _WidgetContent extends StatelessWidget {
   const _WidgetContent({
     required this.kind,
     required this.snapshot,
+    required this.mediaSnapshot,
+    required this.mediaBusy,
     required this.settings,
     required this.showVisibilityPanel,
     required this.onDeviceVisibilityChanged,
+    required this.onPrevious,
+    required this.onTogglePlayPause,
+    required this.onNext,
   });
 
   final RgsWidgetKind kind;
   final RgsSensorSnapshot snapshot;
+  final RgsMediaSnapshot mediaSnapshot;
+  final bool mediaBusy;
   final RgsPanelSettings settings;
   final bool showVisibilityPanel;
   final void Function(String id, bool visible) onDeviceVisibilityChanged;
+  final VoidCallback onPrevious;
+  final VoidCallback onTogglePlayPause;
+  final VoidCallback onNext;
 
   @override
   Widget build(BuildContext context) {
     final gpus = snapshot.gpus
         .where((gpu) => _isNotGenericGpu(gpu) && settings.isVisible(gpu.id))
         .toList();
-    final drives = snapshot.storage.where((drive) => settings.isVisible(drive.id)).toList();
+    final drives = snapshot.storage
+        .where((drive) => settings.isVisible(drive.id))
+        .toList();
 
     if (kind.requiresSensors && !snapshot.available) {
       return _LoadingWidget(
@@ -1408,7 +1515,8 @@ class _WidgetContent extends StatelessWidget {
           stats: [
             _Stat('USED', _bytes(snapshot.memory.usedBytes)),
             _Stat('TOTAL', _bytes(snapshot.memory.totalBytes)),
-            _Stat('SPEED', _memorySpeed(snapshot.memory.speed ?? snapshot.memory.clock)),
+            _Stat('SPEED',
+                _memorySpeed(snapshot.memory.speed ?? snapshot.memory.clock)),
           ],
         ),
       RgsWidgetKind.gpu => _gpuContent(gpus),
@@ -1424,6 +1532,14 @@ class _WidgetContent extends StatelessWidget {
             _Stat('DATE', _shortDate(snapshot.timestamp)),
             _Stat('YEAR', '${snapshot.timestamp.year}'),
           ],
+        ),
+      RgsWidgetKind.music => RgsMusicPlayerWidget(
+          snapshot: mediaSnapshot,
+          accent: kind.accent,
+          busy: mediaBusy,
+          onPrevious: onPrevious,
+          onTogglePlayPause: onTogglePlayPause,
+          onNext: onNext,
         ),
     };
   }
@@ -1453,7 +1569,9 @@ class _WidgetContent extends StatelessWidget {
           _GroupRow(
             name: gpu.name,
             value: _percent(gpu.load),
-            subValue: gpu.load == null ? 'Counter unavailable' : 'GPU engine utilization',
+            subValue: gpu.load == null
+                ? 'Counter unavailable'
+                : 'GPU engine utilization',
             percent: gpu.load,
             stat1: 'TEMP ${_temperature(gpu.temperature)}',
             stat2: 'PWR ${_power(gpu.power)}',
@@ -1467,7 +1585,9 @@ class _WidgetContent extends StatelessWidget {
     if (drives.length == 1) {
       final drive = drives.single;
       return _SingleStatWidget(
-        value: drive.percent == null ? _temperature(drive.temperature) : _percent(drive.percent),
+        value: drive.percent == null
+            ? _temperature(drive.temperature)
+            : _percent(drive.percent),
         subtitle: _storageSubtitle(drive),
         percent: drive.percent,
         accent: kind.accent,
@@ -1487,7 +1607,9 @@ class _WidgetContent extends StatelessWidget {
         for (final drive in drives)
           _GroupRow(
             name: drive.name,
-            value: drive.percent == null ? _temperature(drive.temperature) : _percent(drive.percent),
+            value: drive.percent == null
+                ? _temperature(drive.temperature)
+                : _percent(drive.percent),
             subValue: _storageSubValue(drive),
             percent: drive.percent,
             stat1: 'TEMP ${_temperature(drive.temperature)}',
@@ -1579,7 +1701,8 @@ class _SingleStatWidget extends StatelessWidget {
                 value,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 38, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 38, fontWeight: FontWeight.bold),
               ),
             ),
             if (showProgress)
@@ -1606,13 +1729,15 @@ class _SingleStatWidget extends StatelessWidget {
                   children: [
                     Text(
                       stat.label,
-                      style: const TextStyle(color: Color(0xFF858585), fontSize: 10),
+                      style: const TextStyle(
+                          color: Color(0xFF858585), fontSize: 10),
                     ),
                     Text(
                       stat.value,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),
@@ -1641,7 +1766,8 @@ class _RowsWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     if (rows.isEmpty) {
       return Center(
-        child: Text(emptyLabel, style: const TextStyle(color: Color(0xFFBABAB7))),
+        child:
+            Text(emptyLabel, style: const TextStyle(color: Color(0xFFBABAB7))),
       );
     }
 
@@ -1677,11 +1803,14 @@ class _RowsWidget extends StatelessWidget {
                               row.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600),
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Text(row.value, style: const TextStyle(fontWeight: FontWeight.bold)),
+                          Text(row.value,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
                         ],
                       ),
                       Align(
@@ -1690,12 +1819,15 @@ class _RowsWidget extends StatelessWidget {
                           row.subValue,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Color(0xFFBABAB7), fontSize: 11),
+                          style: const TextStyle(
+                              color: Color(0xFFBABAB7), fontSize: 11),
                         ),
                       ),
                       const SizedBox(height: 8),
                       LinearProgressIndicator(
-                        value: row.percent == null ? 0 : (row.percent!.clamp(0, 100) / 100),
+                        value: row.percent == null
+                            ? 0
+                            : (row.percent!.clamp(0, 100) / 100),
                         minHeight: 8,
                         color: accent,
                         backgroundColor: const Color(0xFF101010),
@@ -1710,7 +1842,8 @@ class _RowsWidget extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                              style: const TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600),
                             ),
                           ),
                           Expanded(
@@ -1719,7 +1852,8 @@ class _RowsWidget extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                              style: const TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600),
                             ),
                           ),
                           Expanded(
@@ -1728,7 +1862,8 @@ class _RowsWidget extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                              style: const TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600),
                             ),
                           ),
                         ],
@@ -1791,7 +1926,8 @@ class _VisibilityPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     if (rows.isEmpty) {
       return Center(
-        child: Text(emptyLabel, style: const TextStyle(color: Color(0xFFBABAB7))),
+        child:
+            Text(emptyLabel, style: const TextStyle(color: Color(0xFFBABAB7))),
       );
     }
 
@@ -1908,10 +2044,14 @@ class _StatusPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: snapshot.available ? const Color(0xFF123B32) : const Color(0xFF402822),
+        color: snapshot.available
+            ? const Color(0xFF123B32)
+            : const Color(0xFF402822),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: snapshot.available ? const Color(0xFF4ED6B8) : const Color(0xFFFF8A65),
+          color: snapshot.available
+              ? const Color(0xFF4ED6B8)
+              : const Color(0xFFFF8A65),
         ),
       ),
       child: Padding(
@@ -1978,7 +2118,8 @@ class _SupportPanel extends StatelessWidget {
             Row(
               children: [
                 const Expanded(
-                  child: Text('Support', style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: Text('Support',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
                 OutlinedButton(
                   onPressed: onToggle,
@@ -2002,7 +2143,8 @@ class _SupportPanel extends StatelessWidget {
               const SizedBox(height: 10),
               FilledButton(
                 onPressed: () => _openUrl(youtubeSupportUrl),
-                style: FilledButton.styleFrom(backgroundColor: const Color(0xFFB91C1C)),
+                style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFB91C1C)),
                 child: const Text('Subscribe on YouTube'),
               ),
               OutlinedButton(
@@ -2098,7 +2240,8 @@ class _GroupRow {
 
 Future<void> _openUrl(String url) async {
   if (Platform.isWindows) {
-    await Process.start('cmd', ['/c', 'start', '', url], mode: ProcessStartMode.detached);
+    await Process.start('cmd', ['/c', 'start', '', url],
+        mode: ProcessStartMode.detached);
     return;
   }
 
@@ -2110,13 +2253,17 @@ Future<void> _openUrl(String url) async {
   await Process.start('xdg-open', [url], mode: ProcessStartMode.detached);
 }
 
-String _percent(double? value) => value == null ? 'N/A' : '${value.toStringAsFixed(0)}%';
-String _temperature(double? value) => value == null ? '-- C' : '${value.toStringAsFixed(0)} C';
-String _power(double? value) => value == null ? '-- W' : '${value.toStringAsFixed(0)} W';
+String _percent(double? value) =>
+    value == null ? 'N/A' : '${value.toStringAsFixed(0)}%';
+String _temperature(double? value) =>
+    value == null ? '-- C' : '${value.toStringAsFixed(0)} C';
+String _power(double? value) =>
+    value == null ? '-- W' : '${value.toStringAsFixed(0)} W';
 
 String _sensorLoadingMessage(String status) {
   final normalized = status.toLowerCase();
-  if (normalized.contains('not found') || normalized.contains('only available')) {
+  if (normalized.contains('not found') ||
+      normalized.contains('only available')) {
     return status;
   }
 
@@ -2148,7 +2295,9 @@ String _bytes(int? bytes) {
     value /= 1024;
     unit++;
   }
-  return unit == 0 ? '${value.toStringAsFixed(0)} ${units[unit]}' : '${value.toStringAsFixed(1)} ${units[unit]}';
+  return unit == 0
+      ? '${value.toStringAsFixed(0)} ${units[unit]}'
+      : '${value.toStringAsFixed(1)} ${units[unit]}';
 }
 
 String _storageSubtitle(RgsStorageReading drive) {
@@ -2173,7 +2322,9 @@ String _storageSensorFallback(RgsStorageReading drive) {
 }
 
 String _rate(double? bytesPerSecond) {
-  return bytesPerSecond == null ? '--/s' : '${_bytes(bytesPerSecond.round())}/s';
+  return bytesPerSecond == null
+      ? '--/s'
+      : '${_bytes(bytesPerSecond.round())}/s';
 }
 
 bool _isNotGenericGpu(RgsGpuReading gpu) {
@@ -2210,7 +2361,8 @@ String _date(DateTime value) {
   return '${_day(value)}, ${_month(value)} ${value.day}, ${value.year}';
 }
 
-String _shortDate(DateTime value) => '${_month(value).substring(0, 3)} ${value.day}';
+String _shortDate(DateTime value) =>
+    '${_month(value).substring(0, 3)} ${value.day}';
 
 String _day(DateTime value) {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
