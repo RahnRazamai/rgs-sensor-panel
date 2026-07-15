@@ -51,7 +51,8 @@ final class RgsWidgetPosition {
     final left = RgsPanelSettings._asDouble(value['Left'] ?? value['left']);
     final top = RgsPanelSettings._asDouble(value['Top'] ?? value['top']);
     final width = RgsPanelSettings._asDouble(value['Width'] ?? value['width']);
-    final height = RgsPanelSettings._asDouble(value['Height'] ?? value['height']);
+    final height =
+        RgsPanelSettings._asDouble(value['Height'] ?? value['height']);
     final physicalLeft = RgsPanelSettings._asDouble(
       value['PhysicalLeft'] ?? value['physicalLeft'],
     );
@@ -99,6 +100,8 @@ final class RgsPanelSettings {
   static const gpuWidgetId = 'widget:gpu';
   static const storageWidgetId = 'widget:storage';
   static const clockWidgetId = 'widget:clock';
+  static const musicWidgetId = 'widget:music';
+  static const _currentSettingsVersion = 2;
 
   final Set<String> hiddenIds;
   final Map<String, RgsWidgetPosition> widgetPositions;
@@ -117,6 +120,7 @@ final class RgsPanelSettings {
         gpuWidgetId,
         storageWidgetId,
         clockWidgetId,
+        musicWidgetId,
       },
       widgetPositions: const {},
       useTwentyFourHourClock: true,
@@ -135,35 +139,45 @@ final class RgsPanelSettings {
         return firstLaunchDefaults();
       }
 
-      final decoded = jsonDecode(file.readAsStringSync());
-      if (decoded is! Map) {
-        return firstLaunchDefaults();
-      }
-
-      final defaults = firstLaunchDefaults();
-      final hiddenIds = decoded.containsKey('HiddenDeviceIds')
-          ? _readStringSet(decoded['HiddenDeviceIds'])
-          : defaults.hiddenIds;
-      return RgsPanelSettings(
-        hiddenIds: hiddenIds,
-        widgetPositions: decoded.containsKey('WidgetPositions')
-            ? _readWidgetPositions(decoded['WidgetPositions'])
-            : defaults.widgetPositions,
-        useTwentyFourHourClock:
-            decoded['UseTwentyFourHourClock'] as bool? ?? defaults.useTwentyFourHourClock,
-        minimizeToTrayOnClose:
-            decoded['MinimizeToTrayOnClose'] as bool? ?? defaults.minimizeToTrayOnClose,
-        alwaysOnTop: decoded['AlwaysOnTop'] as bool? ?? defaults.alwaysOnTop,
-        showSupportPanel:
-            decoded['ShowSupportPanel'] as bool? ?? defaults.showSupportPanel,
-        autoLaunchOnBoot:
-            decoded['AutoLaunchOnBoot'] as bool? ?? defaults.autoLaunchOnBoot,
-        widgetOpacity:
-            _asDouble(decoded['WidgetOpacity']) ?? defaults.widgetOpacity,
-      );
+      return fromJson(jsonDecode(file.readAsStringSync()));
     } on Object {
       return firstLaunchDefaults();
     }
+  }
+
+  static RgsPanelSettings fromJson(Object? value) {
+    if (value is! Map) {
+      return firstLaunchDefaults();
+    }
+
+    final defaults = firstLaunchDefaults();
+    final hiddenIds = value.containsKey('HiddenDeviceIds')
+        ? _readStringSet(value['HiddenDeviceIds'])
+        : defaults.hiddenIds;
+    final settingsVersion = _asInt(value['SettingsVersion']) ?? 1;
+    if (settingsVersion < _currentSettingsVersion) {
+      // New widget IDs must be opted in on upgrade; otherwise the negative
+      // visibility list would open them automatically for existing users.
+      hiddenIds.add(musicWidgetId);
+    }
+
+    return RgsPanelSettings(
+      hiddenIds: hiddenIds,
+      widgetPositions: value.containsKey('WidgetPositions')
+          ? _readWidgetPositions(value['WidgetPositions'])
+          : defaults.widgetPositions,
+      useTwentyFourHourClock: value['UseTwentyFourHourClock'] as bool? ??
+          defaults.useTwentyFourHourClock,
+      minimizeToTrayOnClose: value['MinimizeToTrayOnClose'] as bool? ??
+          defaults.minimizeToTrayOnClose,
+      alwaysOnTop: value['AlwaysOnTop'] as bool? ?? defaults.alwaysOnTop,
+      showSupportPanel:
+          value['ShowSupportPanel'] as bool? ?? defaults.showSupportPanel,
+      autoLaunchOnBoot:
+          value['AutoLaunchOnBoot'] as bool? ?? defaults.autoLaunchOnBoot,
+      widgetOpacity:
+          _asDouble(value['WidgetOpacity']) ?? defaults.widgetOpacity,
+    );
   }
 
   static String get settingsPath {
@@ -224,6 +238,7 @@ final class RgsPanelSettings {
         ..sort((a, b) => a.compareTo(b));
       file.writeAsStringSync(
         const JsonEncoder.withIndent('  ').convert({
+          'SettingsVersion': _currentSettingsVersion,
           'HiddenDeviceIds': sortedHiddenIds,
           'WidgetPositions': {
             for (final key in sortedWidgetPositionKeys)
@@ -278,6 +293,19 @@ final class RgsPanelSettings {
     }
     if (value is String) {
       return double.tryParse(value);
+    }
+    return null;
+  }
+
+  static int? _asInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.round();
+    }
+    if (value is String) {
+      return int.tryParse(value);
     }
     return null;
   }

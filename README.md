@@ -1,11 +1,27 @@
-# RGS Sensor Panel
+<p align="center">
+  <img src="docs/images/rgs-sensor-panel-logo.png" alt="RGS Sensor Panel logo" width="128">
+</p>
 
-Flutter Windows desktop sensor panel with a small C# LibreHardwareMonitor backend.
+<h1 align="center">RGS Sensor Panel</h1>
 
-The app opens a control panel first. From there, users can show Rainmeter-style
-widgets for CPU, RAM, GPU, SSD/storage, and date/time. The widgets are separate
-Flutter windows and the hardware backend runs separately when sensor access is
-enabled.
+<p align="center">
+  Lightweight, independently movable hardware and media widgets for Windows.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-desktop-0078D4?logo=windows11&logoColor=white" alt="Windows desktop">
+  <img src="https://img.shields.io/badge/Flutter-desktop-02569B?logo=flutter&logoColor=white" alt="Flutter desktop">
+  <img src="https://img.shields.io/badge/backend-C%23-512BD4?logo=dotnet&logoColor=white" alt="C# backend">
+</p>
+
+<p align="center">
+  <img src="docs/images/rgs-sensor-panel-showcase.png" alt="RGS Sensor Panel control panel alongside CPU, RAM, music, and time widgets" width="100%">
+</p>
+
+RGS Sensor Panel opens with one control panel for managing Rainmeter-style CPU,
+RAM, GPU, SSD/storage, date/time, and Windows media widgets. Every widget moves
+independently, while the hardware backend runs separately only when sensor
+access is enabled.
 
 ```text
 Flutter UI -> Dart HttpClient -> http://127.0.0.1:8095/data.json -> rgs-sensor-backend.exe
@@ -75,7 +91,8 @@ git push origin v1.0.0
 
 ## Controls
 
-- CPU, RAM, grouped GPU, grouped SSD/fixed-drive, and date/time open as Rainmeter-style widgets.
+- CPU, RAM, grouped GPU, grouped SSD/fixed-drive, date/time, and music controls open as Rainmeter-style widgets.
+- The music widget shows the current track and controls previous, play/pause, and next when supported by the media app.
 - Drag any widget to move it independently.
 - Use the widget buttons on GPU/SSD windows to show or hide individual devices and readings.
 - Use the `12`/`24` button on the time widget to switch clock format.
@@ -93,11 +110,16 @@ git push origin v1.0.0
 - RAM usage, physical RAM brand/part when Windows exposes it, and configured RAM speed
 - Grouped per-drive SSD/storage usage and disk read/write rate
 - Date, time, and day
+- Active Windows media-session title, artist, album, playback progress, and transport controls
 
 ## Notes
 
 This app does not use AIDA64, Rainmeter, or HWiNFO. Normal load, memory, and
 disk readings come from Windows APIs and performance counters.
+
+The music widget uses Windows system media sessions, so it works with apps such
+as Spotify and browsers when they publish media controls to Windows. It does not
+depend on the elevated hardware sensor backend.
 
 Hardware temperatures use `rgs-sensor-backend.exe`, a local headless backend
 built on LibreHardwareMonitorLib. The panel quietly reuses an existing elevated
