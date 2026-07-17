@@ -42,14 +42,9 @@ bool FlutterWindow::OnCreate() {
       flutter_controller_->engine()->GetRegistrarForPlugin(
           "RgsMediaController"));
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
-
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
+  // Visibility is controlled by window_manager after it has applied the launch
+  // options. In particular, --rgs-startup must remain hidden instead of being
+  // shown again by the runner after Flutter's first frame.
 
   return true;
 }
