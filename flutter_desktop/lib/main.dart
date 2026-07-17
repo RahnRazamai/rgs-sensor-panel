@@ -515,8 +515,8 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
 
-    await windowManager.hide();
     await windowManager.setSkipTaskbar(true);
+    await windowManager.hide();
   }
 
   Future<void> _showFromTray() async {
