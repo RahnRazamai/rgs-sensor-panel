@@ -10,13 +10,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // The control panel owns all widget windows. Starting a second process would
   // recreate the configured widgets, so keep one app process per user session.
   HANDLE single_instance_mutex =
-      ::CreateMutexW(nullptr, TRUE, L"Local\\RgsSensorPanel.SingleInstance");
+      ::CreateMutexW(nullptr, FALSE, L"Local\\RgsSensorPanel.SingleInstance");
   if (single_instance_mutex == nullptr) {
     return EXIT_FAILURE;
   }
-  if (::GetLastError() == ERROR_ALREADY_EXISTS) {
+  const DWORD mutex_wait = ::WaitForSingleObject(single_instance_mutex, 0);
+  if (mutex_wait == WAIT_TIMEOUT) {
     ::CloseHandle(single_instance_mutex);
     return EXIT_SUCCESS;
+  }
+  if (mutex_wait != WAIT_OBJECT_0 && mutex_wait != WAIT_ABANDONED) {
+    ::CloseHandle(single_instance_mutex);
+    return EXIT_FAILURE;
   }
 
   // Attach to console when present (e.g., 'flutter run') or create a

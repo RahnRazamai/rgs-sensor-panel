@@ -1,11 +1,6 @@
 #include "flutter_window.h"
 
-#include <optional>
-
-#include <desktop_multi_window/desktop_multi_window_plugin.h>
-
-#include "flutter/generated_plugin_registrant.h"
-#include "rgs_media_controller.h"
+#include "rgs_multi_view_host.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -19,41 +14,21 @@ bool FlutterWindow::OnCreate() {
 
   RECT frame = GetClientArea();
 
-  // The size here must match the window dimensions to avoid unnecessary surface
-  // creation / destruction in the startup path.
-  flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
-      frame.right - frame.left, frame.bottom - frame.top, project_);
-  // Ensure that basic setup of the controller was successful.
-  if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+  auto& host = RgsMultiViewHost::Instance();
+  if (!host.Initialize(project_, GetHandle(), frame.right - frame.left,
+                       frame.bottom - frame.top)) {
     return false;
   }
-  RegisterPlugins(flutter_controller_->engine());
-  DesktopMultiWindowSetWindowCreatedCallback(
-      [](void* controller) {
-        auto* flutter_view_controller =
-            reinterpret_cast<flutter::FlutterViewController*>(controller);
-        RegisterPlugins(flutter_view_controller->engine());
-        RgsMediaControllerRegisterWithRegistrar(
-            flutter_view_controller->engine()->GetRegistrarForPlugin(
-                "RgsMediaController"));
-      });
-  SetChildContent(flutter_controller_->view()->GetNativeWindow());
-  RgsMediaControllerRegisterWithRegistrar(
-      flutter_controller_->engine()->GetRegistrarForPlugin(
-          "RgsMediaController"));
+  SetChildContent(host.MainFlutterWindow());
 
-  // Visibility is controlled by window_manager after it has applied the launch
-  // options. In particular, --rgs-startup must remain hidden instead of being
-  // shown again by the runner after Flutter's first frame.
+  // Visibility is applied through RgsMultiViewHost after Flutter's first
+  // frame. In particular, --rgs-startup must remain hidden.
 
   return true;
 }
 
 void FlutterWindow::OnDestroy() {
-  if (flutter_controller_) {
-    flutter_controller_ = nullptr;
-  }
-
+  RgsMultiViewHost::Instance().Shutdown();
   Win32Window::OnDestroy();
 }
 
@@ -62,18 +37,17 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
   // Give Flutter, including plugins, an opportunity to handle window messages.
-  if (flutter_controller_) {
-    std::optional<LRESULT> result =
-        flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
-                                                      lparam);
-    if (result) {
-      return *result;
-    }
+  auto& host = RgsMultiViewHost::Instance();
+  LRESULT result = 0;
+  if (host.HandleWindowMessage(hwnd, message, wparam, lparam, &result)) {
+    return result;
   }
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (host.engine() != nullptr) {
+        FlutterDesktopEngineReloadSystemFonts(host.engine());
+      }
       break;
   }
 

@@ -84,10 +84,9 @@ flutter::EncodableValue NoSessionResponse() {
 class RgsMediaControllerPlugin : public flutter::Plugin {
  public:
   explicit RgsMediaControllerPlugin(
-      flutter::PluginRegistrarWindows* registrar)
+      flutter::PluginRegistrarWindows* registrar, HWND response_window)
       : registrar_(registrar),
-        response_window_(GetAncestor(
-            registrar->GetView()->GetNativeWindow(), GA_ROOT)),
+        response_window_(response_window),
         channel_(std::make_unique<
                  flutter::MethodChannel<flutter::EncodableValue>>(
             registrar->messenger(), kChannelName,
@@ -419,10 +418,11 @@ class RgsMediaControllerPlugin : public flutter::Plugin {
 }  // namespace
 
 void RgsMediaControllerRegisterWithRegistrar(
-    FlutterDesktopPluginRegistrarRef registrar_ref) {
+    FlutterDesktopPluginRegistrarRef registrar_ref, HWND response_window) {
   auto* registrar =
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar_ref);
-  auto plugin = std::make_unique<RgsMediaControllerPlugin>(registrar);
+  auto plugin =
+      std::make_unique<RgsMediaControllerPlugin>(registrar, response_window);
   registrar->AddPlugin(std::move(plugin));
 }
