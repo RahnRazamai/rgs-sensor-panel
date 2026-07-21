@@ -143,6 +143,14 @@ Future<void> _configureNativeWindow(
         );
       }
       await windowManager.show();
+      // Showing a hidden window can trigger a per-monitor DPI transition that
+      // lets Windows adjust its initial bounds. Restore again once that
+      // transition has completed, using the window's new scale factor.
+      if (savedWidgetPosition != null) {
+        await windowManager.setPosition(
+          await _restoreWidgetPosition(savedWidgetPosition),
+        );
+      }
       return;
     }
 
@@ -1038,6 +1046,7 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       _windowController = controller;
       await controller.setWindowMethodHandler((call) async {
         if (call.method == 'window_close') {
+          await _saveWidgetPlacement();
           await windowManager.close();
         }
         return null;
