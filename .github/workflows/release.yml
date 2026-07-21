@@ -30,44 +30,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
       - name: Check .NET SDK
         run: dotnet --version
 
       - name: Check Flutter SDK
         run: flutter --version
-
-      - name: Install Firebase CLI
-        run: npm install -g firebase-tools
-
-      - name: Check Firebase CLI
-        run: firebase --version
-
-      - name: Configure FlutterFire
-        working-directory: flutter_desktop
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-        shell: pwsh
-        run: |
-          dart pub global activate flutterfire_cli
-
-          if ([string]::IsNullOrWhiteSpace($env:FIREBASE_SERVICE_ACCOUNT)) {
-            throw "Missing FIREBASE_SERVICE_ACCOUNT_JSON repository secret."
-          }
-
-          $serviceAccountPath = Join-Path $env:RUNNER_TEMP "firebase-service-account.json"
-          $env:FIREBASE_SERVICE_ACCOUNT | Set-Content -Path $serviceAccountPath -Encoding UTF8
-
-          try {
-            flutterfire configure --project=rgs-sensor-panel --yes --platforms=windows --service-account=$serviceAccountPath
-          }
-          finally {
-            Remove-Item -LiteralPath $serviceAccountPath -Force -ErrorAction SilentlyContinue
-          }
 
       - name: Restore Backend
         run: dotnet restore sensor_backend\RgsSensorBackend.csproj
@@ -89,8 +56,6 @@ jobs:
 
       - name: Build Flutter Windows
         working-directory: flutter_desktop
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: flutter build windows --release
 
       - name: Prepare Release Variables

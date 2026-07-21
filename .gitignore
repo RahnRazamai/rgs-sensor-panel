@@ -30,7 +30,6 @@ flutter_desktop/.dart_tool/
 flutter_desktop/.flutter-plugins
 flutter_desktop/.flutter-plugins-dependencies
 flutter_desktop/build/
-flutter_desktop/lib/firebase_options.dart
 
 # Windows
 Thumbs.db
