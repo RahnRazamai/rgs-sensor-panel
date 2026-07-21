@@ -1,21 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
-import 'package:desktop_multi_window/desktop_multi_window.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:screen_retriever/screen_retriever.dart';
 import 'package:tray_manager/tray_manager.dart';
-import 'package:window_manager/window_manager.dart';
 
-import 'firebase_options.dart';
 import 'src/media/music_player_widget.dart';
 import 'src/media/rgs_windows_media.dart';
 import 'src/settings/panel_settings.dart';
 import 'src/settings/startup_registration.dart';
 import 'src/sensors/rgs_windows_sensors.dart';
 import 'src/windows/windows_idle.dart';
+import 'src/windows/rgs_multi_view.dart';
 
 const String koFiSupportUrl = 'https://ko-fi.com/rahngamingstudio';
 const String youtubeSupportUrl = 'https://www.youtube.com/@rahngamingstudio';
@@ -24,191 +19,22 @@ const Duration widgetActiveRefreshInterval = Duration(seconds: 1);
 const Duration widgetIdleRefreshInterval = Duration(seconds: 5);
 const Duration widgetDisplayTimeoutLead = Duration(seconds: 15);
 const Duration widgetFallbackPauseAfterIdle = Duration(seconds: 45);
+final Completer<void> _primaryWindowReady = Completer<void>();
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  final launchConfig = await _readLaunchConfig(args);
-  final widgetKind = launchConfig.widgetKind;
-  final startHidden = launchConfig.startHidden;
-  if (widgetKind == null) {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  }
-
-  await _configureNativeWindow(widgetKind, startHidden: startHidden);
-
-  runApp(
-    RgsSensorPanelApp(
-      widgetKind: widgetKind,
-      startHidden: startHidden,
-    ),
-  );
+  final startHidden = args.contains('--rgs-startup');
+  RgsMultiView.initialize();
+  runWidget(RgsMultiViewRoot(startHidden: startHidden));
+  await WidgetsBinding.instance.endOfFrame;
+  await _configureNativeWindow(startHidden: startHidden);
+  _primaryWindowReady.complete();
 }
 
-final class RgsLaunchConfig {
-  const RgsLaunchConfig({
-    required this.widgetKind,
-    required this.startHidden,
-  });
-
-  final RgsWidgetKind? widgetKind;
-  final bool startHidden;
-}
-
-Future<RgsLaunchConfig> _readLaunchConfig(List<String> args) async {
-  var widgetKind = RgsWidgetKind.fromArgs(args);
-  final startHidden = widgetKind == null && args.contains('--rgs-startup');
-
-  if (Platform.isWindows) {
-    try {
-      final controller = await WindowController.fromCurrentEngine();
-      widgetKind =
-          _widgetKindFromWindowArguments(controller.arguments) ?? widgetKind;
-    } on Object {
-      // Command-line arguments are still enough for normal startup and tests.
-    }
-  }
-
-  return RgsLaunchConfig(
-    widgetKind: widgetKind,
-    startHidden: startHidden,
-  );
-}
-
-String _widgetWindowArguments(RgsWidgetKind kind) {
-  return jsonEncode({
-    'type': 'widget',
-    'kind': kind.id,
-  });
-}
-
-RgsWidgetKind? _widgetKindFromWindowArguments(String arguments) {
-  if (arguments.trim().isEmpty) {
-    return null;
-  }
-
-  try {
-    final decoded = jsonDecode(arguments);
-    if (decoded is Map && decoded['type'] == 'widget') {
-      return RgsWidgetKind.fromId(decoded['kind']?.toString() ?? '');
-    }
-  } on Object {
-    return null;
-  }
-
-  return null;
-}
-
-extension RgsWindowControllerCommands on WindowController {
-  Future<void> closeWidgetWindow() {
-    return invokeMethod<void>('window_close');
-  }
-}
-
-Future<void> _configureNativeWindow(
-  RgsWidgetKind? widgetKind, {
-  required bool startHidden,
-}) async {
-  if (!Platform.isWindows) {
-    return;
-  }
-
-  await windowManager.ensureInitialized();
-  final isWidget = widgetKind != null;
-  final settings = RgsPanelSettings.load();
-  final savedWidgetPosition =
-      widgetKind == null ? null : settings.widgetPosition(widgetKind.settingId);
-  final options = WindowOptions(
-    size: isWidget ? const Size(320, 210) : const Size(420, 640),
-    minimumSize: isWidget ? const Size(292, 188) : const Size(380, 520),
-    center: !isWidget && !startHidden,
-    title: isWidget ? widgetKind.windowTitle : 'RGS Sensor Control',
-    titleBarStyle: isWidget ? TitleBarStyle.hidden : TitleBarStyle.normal,
-    skipTaskbar: isWidget || startHidden,
-    backgroundColor: isWidget ? Colors.transparent : const Color(0xFF111111),
-  );
-
-  await windowManager.waitUntilReadyToShow(options, () async {
-    if (isWidget) {
-      await windowManager.setAlwaysOnTop(settings.alwaysOnTop);
-      await windowManager.setOpacity(settings.widgetOpacity);
-      if (savedWidgetPosition != null) {
-        if (savedWidgetPosition.size != null) {
-          await windowManager.setSize(savedWidgetPosition.size!);
-        }
-        await windowManager.setPosition(
-          await _restoreWidgetPosition(savedWidgetPosition),
-        );
-      }
-      await windowManager.show();
-      // Showing a hidden window can trigger a per-monitor DPI transition that
-      // lets Windows adjust its initial bounds. Restore again once that
-      // transition has completed, using the window's new scale factor.
-      if (savedWidgetPosition != null) {
-        await windowManager.setPosition(
-          await _restoreWidgetPosition(savedWidgetPosition),
-        );
-      }
-      return;
-    }
-
-    await windowManager.setPreventClose(true);
-    if (startHidden) {
-      await windowManager.hide();
-      await windowManager.setSkipTaskbar(true);
-      return;
-    }
-
-    await windowManager.show();
-    await windowManager.focus();
-  });
-}
-
-Future<Offset> _restoreWidgetPosition(RgsWidgetPosition position) async {
-  final currentScale = _currentWindowScaleFactor();
-  if (position.physicalLeft != null && position.physicalTop != null) {
-    return Offset(
-      position.physicalLeft! / currentScale,
-      position.physicalTop! / currentScale,
-    );
-  }
-
-  final legacyPosition = await _restoreLegacyWidgetPosition(
-    position,
-    currentScale,
-  );
-  if (legacyPosition != null) {
-    return legacyPosition;
-  }
-
-  return Offset(position.left, position.top);
-}
-
-Future<Offset?> _restoreLegacyWidgetPosition(
-  RgsWidgetPosition position,
-  double currentScale,
-) async {
-  try {
-    final displays = await screenRetriever.getAllDisplays();
-    final display = _displayForPosition(
-      Offset(position.left, position.top),
-      displays,
-    );
-    if (display == null) {
-      return null;
-    }
-
-    final displayScale = _displayScaleFactor(display);
-    return Offset(
-      position.left * displayScale / currentScale,
-      position.top * displayScale / currentScale,
-    );
-  } on Object {
-    return null;
-  }
-}
+Future<void> _configureNativeWindow({required bool startHidden}) =>
+    Platform.isWindows
+        ? RgsMultiView.configureMain(startHidden: startHidden)
+        : Future<void>.value();
 
 extension RgsWidgetPositionSize on RgsWidgetPosition {
   Size? get size {
@@ -218,61 +44,6 @@ extension RgsWidgetPositionSize on RgsWidgetPosition {
 
     return Size(width!, height!);
   }
-}
-
-Display? _displayForPosition(Offset position, List<Display> displays) {
-  Display? nearestDisplay;
-  var nearestDistance = double.infinity;
-
-  for (final display in displays) {
-    final rect = _displayRect(display);
-    if (rect.contains(position)) {
-      return display;
-    }
-
-    final distance = _distanceToRect(position, rect);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearestDisplay = display;
-    }
-  }
-
-  return nearestDisplay;
-}
-
-Rect _displayRect(Display display) {
-  final origin = display.visiblePosition ?? Offset.zero;
-  final size = display.visibleSize ?? display.size;
-  return origin & size;
-}
-
-double _distanceToRect(Offset position, Rect rect) {
-  final dx = position.dx < rect.left
-      ? rect.left - position.dx
-      : position.dx > rect.right
-          ? position.dx - rect.right
-          : 0.0;
-  final dy = position.dy < rect.top
-      ? rect.top - position.dy
-      : position.dy > rect.bottom
-          ? position.dy - rect.bottom
-          : 0.0;
-  return dx * dx + dy * dy;
-}
-
-double _displayScaleFactor(Display display) {
-  final scaleFactor = display.scaleFactor?.toDouble() ?? 1;
-  return scaleFactor <= 0 ? 1 : scaleFactor;
-}
-
-double _currentWindowScaleFactor() {
-  final views = WidgetsBinding.instance.platformDispatcher.views;
-  if (views.isEmpty) {
-    return 1;
-  }
-
-  final scaleFactor = views.first.devicePixelRatio;
-  return scaleFactor <= 0 ? 1 : scaleFactor;
 }
 
 bool _shouldPauseUiRefreshForIdle() {
@@ -313,6 +84,129 @@ Duration? _pauseRefreshAfterIdle() {
   }
 
   return Duration(seconds: thresholdSeconds);
+}
+
+class RgsMultiViewRoot extends StatefulWidget {
+  const RgsMultiViewRoot({super.key, required this.startHidden});
+
+  final bool startHidden;
+
+  @override
+  State<RgsMultiViewRoot> createState() => _RgsMultiViewRootState();
+}
+
+class _RgsMultiViewRootState extends State<RgsMultiViewRoot>
+    with WidgetsBindingObserver {
+  static _RgsMultiViewRootState? instance;
+  static final StreamController<RgsWidgetKind> _closedWidgets =
+      StreamController<RgsWidgetKind>.broadcast();
+
+  static Stream<RgsWidgetKind> get closedWidgets => _closedWidgets.stream;
+
+  final Map<int, RgsWidgetKind> _widgetViews = {};
+  final Set<int> _closingWidgetViews = {};
+
+  @override
+  void initState() {
+    super.initState();
+    instance = this;
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (identical(instance, this)) instance = null;
+    super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (mounted) setState(() {});
+  }
+
+  Future<int> openWidget(RgsWidgetKind kind) async {
+    final existing =
+        _widgetViews.entries.where((entry) => entry.value == kind).firstOrNull;
+    if (existing != null) {
+      await RgsMultiView.focus(existing.key);
+      return existing.key;
+    }
+
+    final settings = RgsPanelSettings.load();
+    final saved = settings.widgetPosition(kind.settingId);
+    final size = saved?.size ?? const Size(320, 210);
+    Offset? physicalPosition;
+    if (saved != null) {
+      final savedScale = saved.scaleFactor ?? 1;
+      physicalPosition = Offset(
+        saved.physicalLeft ?? saved.left * savedScale,
+        saved.physicalTop ?? saved.top * savedScale,
+      );
+    }
+    final viewId = await RgsMultiView.create(
+      title: kind.windowTitle,
+      size: size,
+      physicalPosition: physicalPosition,
+    );
+    if (!mounted) {
+      await RgsMultiView.destroy(viewId);
+      return viewId;
+    }
+    setState(() => _widgetViews[viewId] = kind);
+    await RgsMultiView.setSkipTaskbar(viewId, true);
+    await RgsMultiView.setAlwaysOnTop(viewId, settings.alwaysOnTop);
+    await RgsMultiView.setOpacity(viewId, settings.widgetOpacity);
+    await RgsMultiView.show(viewId);
+    return viewId;
+  }
+
+  Future<void> closeWidget(int viewId, {bool notify = true}) async {
+    if (!_closingWidgetViews.add(viewId)) return;
+    final kind = _widgetViews[viewId];
+    try {
+      // Flutter's current experimental desktop multi-view embedder can crash
+      // when a secondary controller is destroyed while the shared engine is
+      // running. A widget X means "hide", so retain and reuse its view.
+      await RgsMultiView.hide(viewId);
+    } on Object {
+      // The application may be shutting down already.
+    } finally {
+      _closingWidgetViews.remove(viewId);
+    }
+    if (notify && kind != null) _closedWidgets.add(kind);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dispatcher = WidgetsBinding.instance.platformDispatcher;
+    final platformViews = dispatcher.views;
+    if (platformViews.isEmpty) return const SizedBox.shrink();
+    final primary = platformViews.first;
+    final views = <Widget>[
+      View(
+        key: ValueKey('control_${primary.viewId}'),
+        view: primary,
+        child: RgsSensorPanelApp(
+          widgetKind: null,
+          startHidden: widget.startHidden,
+        ),
+      ),
+    ];
+    for (final entry in _widgetViews.entries) {
+      final flutterView = dispatcher.view(id: entry.key);
+      if (flutterView != null) {
+        views.add(
+          View(
+            key: ValueKey('widget_${entry.key}'),
+            view: flutterView,
+            child: RgsSensorPanelApp(widgetKind: entry.value),
+          ),
+        );
+      }
+    }
+    return ViewCollection(views: views);
+  }
 }
 
 class RgsSensorPanelApp extends StatelessWidget {
@@ -454,14 +348,14 @@ class ControlPanelPage extends StatefulWidget {
   State<ControlPanelPage> createState() => _ControlPanelPageState();
 }
 
-class _ControlPanelPageState extends State<ControlPanelPage>
-    with WindowListener, TrayListener {
+class _ControlPanelPageState extends State<ControlPanelPage> with TrayListener {
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
   RgsPanelSettings _settings = RgsPanelSettings.load();
-  final Map<RgsWidgetKind, WindowController> _widgetWindows = {};
+  final Map<RgsWidgetKind, int> _widgetWindows = {};
   final Set<RgsWidgetKind> _visibleWidgets = {};
   final Set<RgsWidgetKind> _pendingWidgetLaunches = {};
-  StreamSubscription<void>? _windowSubscription;
+  StreamSubscription<RgsWidgetKind>? _windowSubscription;
+  StreamSubscription<RgsViewEvent>? _primaryEventSubscription;
   Timer? _timer;
   bool _enablingSensors = false;
   bool _isQuitting = false;
@@ -472,24 +366,37 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   void initState() {
     super.initState();
     if (Platform.isWindows && widget.pollSensors) {
-      windowManager.addListener(this);
       trayManager.addListener(this);
       unawaited(_setupTray());
       unawaited(_syncStartupRegistration());
-      _windowSubscription = onWindowsChanged.listen(
-        (_) => unawaited(_syncWidgetWindowControllers()),
-      );
+      _windowSubscription = _RgsMultiViewRootState.closedWidgets.listen((kind) {
+        if (!mounted) return;
+        setState(() {
+          _widgetWindows.remove(kind);
+          _visibleWidgets.remove(kind);
+          _settings = RgsPanelSettings.load();
+        });
+      });
+      final primaryId =
+          WidgetsBinding.instance.platformDispatcher.views.first.viewId;
+      _primaryEventSubscription = RgsMultiView.events
+          .where((event) => event.viewId == primaryId)
+          .listen((event) {
+        if (event.name == 'close' || event.name == 'minimize') {
+          unawaited(_hideToTray());
+        }
+      });
     }
 
     if (!widget.pollSensors) {
       return;
     }
     unawaited(_runRefreshTick());
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.startHidden) {
-        unawaited(_hideToTray());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _primaryWindowReady.future;
+      if (mounted) {
+        await _launchConfiguredWidgets();
       }
-      unawaited(_launchConfiguredWidgets());
     });
   }
 
@@ -497,8 +404,8 @@ class _ControlPanelPageState extends State<ControlPanelPage>
   void dispose() {
     _timer?.cancel();
     unawaited(_windowSubscription?.cancel());
+    unawaited(_primaryEventSubscription?.cancel());
     if (Platform.isWindows && widget.pollSensors) {
-      windowManager.removeListener(this);
       trayManager.removeListener(this);
     }
     super.dispose();
@@ -523,8 +430,9 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
 
-    await windowManager.setSkipTaskbar(true);
-    await windowManager.hide();
+    final viewId = await RgsMultiView.mainViewId();
+    await RgsMultiView.setSkipTaskbar(viewId, true);
+    await RgsMultiView.hide(viewId);
   }
 
   Future<void> _showFromTray() async {
@@ -532,38 +440,20 @@ class _ControlPanelPageState extends State<ControlPanelPage>
       return;
     }
 
-    await windowManager.setSkipTaskbar(false);
-    await windowManager.show();
-    await windowManager.focus();
+    final viewId = await RgsMultiView.mainViewId();
+    await RgsMultiView.setSkipTaskbar(viewId, false);
+    await RgsMultiView.show(viewId);
+    await RgsMultiView.focus(viewId);
   }
 
   Future<void> _exitApplication() async {
     _isQuitting = true;
-    for (final controller in _widgetWindows.values.toList()) {
-      await _closeWidgetWindow(controller);
+    for (final viewId in _widgetWindows.values.toList()) {
+      await _closeWidgetWindow(viewId);
     }
     _widgetWindows.clear();
     await trayManager.destroy();
-    await windowManager.setPreventClose(false);
-    await windowManager.close();
-  }
-
-  @override
-  void onWindowClose() {
-    if (_isQuitting) {
-      return;
-    }
-
-    unawaited(_hideToTray());
-  }
-
-  @override
-  void onWindowMinimize() {
-    if (_isQuitting) {
-      return;
-    }
-
-    unawaited(_hideToTray());
+    await RgsMultiView.quit();
   }
 
   @override
@@ -659,39 +549,6 @@ class _ControlPanelPageState extends State<ControlPanelPage>
     }
   }
 
-  Future<void> _syncWidgetWindowControllers() async {
-    if (!Platform.isWindows) {
-      return;
-    }
-
-    try {
-      final controllers = await WindowController.getAll();
-      final widgetWindows = <RgsWidgetKind, WindowController>{};
-      for (final controller in controllers) {
-        final kind = _widgetKindFromWindowArguments(controller.arguments);
-        if (kind != null) {
-          widgetWindows[kind] = controller;
-        }
-      }
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _widgetWindows
-          ..clear()
-          ..addAll(widgetWindows);
-        _visibleWidgets
-          ..clear()
-          ..addAll(widgetWindows.keys);
-        _settings = RgsPanelSettings.load();
-      });
-    } on Object {
-      // The next window event or refresh will try again.
-    }
-  }
-
   Future<void> _launchPendingWidgetsIfReady() async {
     if (_launchingPendingWidgets || !_snapshot.available) {
       return;
@@ -735,42 +592,24 @@ class _ControlPanelPageState extends State<ControlPanelPage>
         return;
       }
 
-      final controller = await WindowController.create(
-        WindowConfiguration(
-          arguments: _widgetWindowArguments(kind),
-          hiddenAtLaunch: true,
-        ),
-      );
+      final viewId = await _RgsMultiViewRootState.instance!.openWidget(kind);
       setState(() {
-        _widgetWindows[kind] = controller;
+        _widgetWindows[kind] = viewId;
         _visibleWidgets.add(kind);
       });
       return;
     }
 
     _pendingWidgetLaunches.remove(kind);
-    final controller = _widgetWindows.remove(kind);
-    if (controller != null) {
-      await _closeWidgetWindow(controller);
+    final viewId = _widgetWindows.remove(kind);
+    if (viewId != null) {
+      await _closeWidgetWindow(viewId);
     }
     setState(() => _visibleWidgets.remove(kind));
   }
 
-  Future<void> _closeWidgetWindow(WindowController controller) async {
-    for (var attempt = 0; attempt < 5; attempt++) {
-      try {
-        await controller.closeWidgetWindow();
-        return;
-      } on Object {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
-
-    try {
-      await controller.hide();
-    } on Object {
-      // The window may already be gone.
-    }
+  Future<void> _closeWidgetWindow(int viewId) async {
+    await _RgsMultiViewRootState.instance?.closeWidget(viewId, notify: false);
   }
 
   Future<void> _showAll() async {
@@ -998,8 +837,7 @@ class WidgetWindowPage extends StatefulWidget {
   State<WidgetWindowPage> createState() => _WidgetWindowPageState();
 }
 
-class _WidgetWindowPageState extends State<WidgetWindowPage>
-    with WindowListener {
+class _WidgetWindowPageState extends State<WidgetWindowPage> {
   static const _maxMissedRefreshesBeforeLoading = 4;
 
   RgsSensorSnapshot _snapshot = RgsSensorSnapshot.unavailable('Starting...');
@@ -1012,7 +850,9 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   bool _refreshInProgress = false;
   bool _mediaCommandInProgress = false;
   int _missedRefreshes = 0;
-  WindowController? _windowController;
+  StreamSubscription<RgsViewEvent>? _viewEventSubscription;
+  int? _viewId;
+  double? _displayScaleFactor;
 
   late final RgsMediaController _mediaController =
       widget.mediaController ?? RgsWindowsMediaController.instance;
@@ -1020,10 +860,6 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   @override
   void initState() {
     super.initState();
-    if (Platform.isWindows && widget.pollSensors) {
-      windowManager.addListener(this);
-      unawaited(_setupWindowController());
-    }
     if (!widget.pollSensors) {
       return;
     }
@@ -1031,43 +867,53 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final viewId = View.of(context).viewId;
+    if (_viewId == viewId) return;
+    _viewId = viewId;
+    unawaited(_loadDisplayScale(viewId));
+    unawaited(_viewEventSubscription?.cancel());
+    _viewEventSubscription = RgsMultiView.events
+        .where((event) => event.viewId == viewId)
+        .listen(_handleViewEvent);
+  }
+
+  @override
   void dispose() {
     _timer?.cancel();
-    unawaited(_windowController?.setWindowMethodHandler(null));
-    if (Platform.isWindows && widget.pollSensors) {
-      windowManager.removeListener(this);
-    }
+    unawaited(_viewEventSubscription?.cancel());
     super.dispose();
   }
 
-  Future<void> _setupWindowController() async {
-    try {
-      final controller = await WindowController.fromCurrentEngine();
-      _windowController = controller;
-      await controller.setWindowMethodHandler((call) async {
-        if (call.method == 'window_close') {
-          await _saveWidgetPlacement();
-          await windowManager.close();
+  void _handleViewEvent(RgsViewEvent event) {
+    if (_displayScaleFactor != event.bounds.scaleFactor && mounted) {
+      setState(() => _displayScaleFactor = event.bounds.scaleFactor);
+    }
+    switch (event.name) {
+      case 'moved':
+        unawaited(_saveWidgetPlacement(bounds: event.bounds));
+        break;
+      case 'resized':
+        if (!_applyingWindowSize) {
+          unawaited(_saveWidgetPlacement(bounds: event.bounds));
         }
-        return null;
-      });
+        break;
+      case 'close':
+        unawaited(_hideThisWidget());
+        break;
+    }
+  }
+
+  Future<void> _loadDisplayScale(int viewId) async {
+    try {
+      final bounds = await RgsMultiView.getBounds(viewId);
+      if (mounted && _viewId == viewId) {
+        setState(() => _displayScaleFactor = bounds.scaleFactor);
+      }
     } on Object {
-      // Standalone --rgs-widget launches do not need cross-window commands.
+      // The view can be closed while its first frame is being attached.
     }
-  }
-
-  @override
-  void onWindowMoved() {
-    unawaited(_saveWidgetPlacement());
-  }
-
-  @override
-  void onWindowResized() {
-    if (_applyingWindowSize) {
-      return;
-    }
-
-    unawaited(_saveWidgetPlacement());
   }
 
   Future<void> _refresh() async {
@@ -1101,7 +947,6 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
         _settings = settings;
       });
       await _applyWindowPreferences(settings, displaySnapshot);
-      await _syncManualWidgetPlacement(settings, displaySnapshot);
     } finally {
       _refreshInProgress = false;
     }
@@ -1119,7 +964,6 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       _settings = settings;
     });
     await _applyWindowPreferences(settings, snapshot);
-    await _syncManualWidgetPlacement(settings, snapshot);
   }
 
   Future<void> _refreshMedia() async {
@@ -1140,7 +984,6 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
         _settings = settings;
       });
       await _applyWindowPreferences(settings, _snapshot);
-      await _syncManualWidgetPlacement(settings, _snapshot);
     } finally {
       _refreshInProgress = false;
     }
@@ -1201,7 +1044,12 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
   Widget build(BuildContext context) {
     final kind = widget.kind;
     final action = _buildAction(kind);
-    return Scaffold(
+    final mediaQuery = MediaQuery.of(context);
+    final flutterScale = View.of(context).devicePixelRatio;
+    final displayScale = _displayScaleFactor ?? flutterScale;
+    final dpiTextCorrection =
+        flutterScale <= 0 ? 1.0 : (displayScale / flutterScale).clamp(1.0, 1.5);
+    final content = Scaffold(
       backgroundColor: Colors.transparent,
       body: DecoratedBox(
         decoration: BoxDecoration(
@@ -1215,7 +1063,12 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
             children: [
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onPanStart: (_) => windowManager.startDragging(),
+                onPanStart: (_) {
+                  final viewId = _viewId;
+                  if (viewId != null) {
+                    unawaited(RgsMultiView.startDragging(viewId));
+                  }
+                },
                 onPanEnd: (_) => unawaited(_saveWidgetPlacement()),
                 onPanCancel: () => unawaited(_saveWidgetPlacement()),
                 child: Container(
@@ -1276,6 +1129,23 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
         ),
       ),
     );
+    final correctedContent = MediaQuery(
+      data: mediaQuery.copyWith(
+        textScaler: TextScaler.linear(
+          mediaQuery.textScaler.scale(1) * dpiTextCorrection,
+        ),
+      ),
+      child: content,
+    );
+    return _WidgetResizeFrame(
+      onResizeStart: (edge) {
+        final viewId = _viewId;
+        if (viewId != null) {
+          unawaited(RgsMultiView.startResizing(viewId, edge));
+        }
+      },
+      child: correctedContent,
+    );
   }
 
   _WidgetAction? _buildAction(RgsWidgetKind kind) {
@@ -1329,8 +1199,10 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       return;
     }
 
-    await windowManager.setAlwaysOnTop(settings.alwaysOnTop);
-    await windowManager.setOpacity(settings.widgetOpacity);
+    final viewId = _viewId;
+    if (viewId == null) return;
+    await RgsMultiView.setAlwaysOnTop(viewId, settings.alwaysOnTop);
+    await RgsMultiView.setOpacity(viewId, settings.widgetOpacity);
     final savedSize = settings.widgetPosition(widget.kind.settingId)?.size;
     final targetSize = savedSize ?? _targetWidgetSize(snapshot);
     if (_lastAppliedSize == targetSize) {
@@ -1340,33 +1212,11 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     _lastAppliedSize = targetSize;
     _applyingWindowSize = true;
     try {
-      await windowManager.setSize(targetSize);
+      await RgsMultiView.setSize(viewId, targetSize);
       await Future<void>.delayed(const Duration(milliseconds: 50));
     } finally {
       _applyingWindowSize = false;
     }
-  }
-
-  Future<void> _syncManualWidgetPlacement(
-    RgsPanelSettings settings,
-    RgsSensorSnapshot snapshot,
-  ) async {
-    if (!Platform.isWindows || _applyingWindowSize) {
-      return;
-    }
-
-    final expectedSize = settings.widgetPosition(widget.kind.settingId)?.size ??
-        _targetWidgetSize(snapshot);
-    final currentSize = await windowManager.getSize();
-    if (_isCloseSize(currentSize, expectedSize)) {
-      return;
-    }
-
-    await _saveWidgetPlacement();
-  }
-
-  bool _isCloseSize(Size a, Size b) {
-    return (a.width - b.width).abs() < 1 && (a.height - b.height).abs() < 1;
   }
 
   Size _targetWidgetSize(RgsSensorSnapshot snapshot) {
@@ -1400,14 +1250,17 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     unawaited(_applyWindowPreferences(_settings, _snapshot));
   }
 
-  Future<void> _saveWidgetPlacement() async {
+  Future<void> _saveWidgetPlacement({RgsViewBounds? bounds}) async {
     if (!Platform.isWindows) {
       return;
     }
 
-    final position = await windowManager.getPosition();
-    final size = await windowManager.getSize();
-    final scaleFactor = _currentWindowScaleFactor();
+    final viewId = _viewId;
+    if (viewId == null) return;
+    final currentBounds = bounds ?? await RgsMultiView.getBounds(viewId);
+    final position = currentBounds.position;
+    final size = currentBounds.size;
+    final scaleFactor = currentBounds.scaleFactor;
     final settings = RgsPanelSettings.load();
     settings.setWidgetPosition(
       widget.kind.settingId,
@@ -1415,8 +1268,8 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
       position.dy,
       width: size.width,
       height: size.height,
-      physicalLeft: position.dx * scaleFactor,
-      physicalTop: position.dy * scaleFactor,
+      physicalLeft: currentBounds.physicalPosition.dx,
+      physicalTop: currentBounds.physicalPosition.dy,
       scaleFactor: scaleFactor,
     );
     settings.save();
@@ -1428,7 +1281,99 @@ class _WidgetWindowPageState extends State<WidgetWindowPage>
     await _saveWidgetPlacement();
     _settings.setVisible(widget.kind.settingId, false);
     _settings.save();
-    await windowManager.close();
+    final viewId = _viewId;
+    if (viewId != null) {
+      await _RgsMultiViewRootState.instance?.closeWidget(viewId);
+    }
+  }
+}
+
+class _WidgetResizeFrame extends StatelessWidget {
+  const _WidgetResizeFrame({
+    required this.onResizeStart,
+    required this.child,
+  });
+
+  final ValueChanged<String> onResizeStart;
+  final Widget child;
+
+  Widget _handle(String edge, MouseCursor cursor) {
+    return MouseRegion(
+      cursor: cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => onResizeStart(edge),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(child: child),
+        Positioned(
+          left: 0,
+          top: 10,
+          bottom: 10,
+          width: 6,
+          child: _handle('left', SystemMouseCursors.resizeLeftRight),
+        ),
+        Positioned(
+          right: 0,
+          top: 10,
+          bottom: 10,
+          width: 6,
+          child: _handle('right', SystemMouseCursors.resizeLeftRight),
+        ),
+        Positioned(
+          left: 10,
+          right: 10,
+          top: 0,
+          height: 6,
+          child: _handle('top', SystemMouseCursors.resizeUpDown),
+        ),
+        Positioned(
+          left: 10,
+          right: 10,
+          bottom: 0,
+          height: 6,
+          child: _handle('bottom', SystemMouseCursors.resizeUpDown),
+        ),
+        Positioned(
+          left: 0,
+          top: 0,
+          width: 10,
+          height: 10,
+          child: _handle('topLeft', SystemMouseCursors.resizeUpLeftDownRight),
+        ),
+        Positioned(
+          right: 0,
+          top: 0,
+          width: 10,
+          height: 10,
+          child: _handle('topRight', SystemMouseCursors.resizeUpRightDownLeft),
+        ),
+        Positioned(
+          left: 0,
+          bottom: 0,
+          width: 10,
+          height: 10,
+          child:
+              _handle('bottomLeft', SystemMouseCursors.resizeUpRightDownLeft),
+        ),
+        Positioned(
+          right: 0,
+          bottom: 0,
+          width: 10,
+          height: 10,
+          child: _handle(
+            'bottomRight',
+            SystemMouseCursors.resizeUpLeftDownRight,
+          ),
+        ),
+      ],
+    );
   }
 }
 
