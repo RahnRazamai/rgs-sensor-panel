@@ -40,6 +40,7 @@ final class RgsCpuReading {
     this.temperature,
     this.power,
     this.clock,
+    this.fanRpm,
   });
 
   final String? name;
@@ -47,6 +48,7 @@ final class RgsCpuReading {
   final double? temperature;
   final double? power;
   final double? clock;
+  final double? fanRpm;
 }
 
 final class RgsMemoryReading {
@@ -79,6 +81,7 @@ final class RgsGpuReading {
     this.temperature,
     this.power,
     this.clock,
+    this.fanRpm,
   });
 
   final String id;
@@ -87,6 +90,7 @@ final class RgsGpuReading {
   final double? temperature;
   final double? power;
   final double? clock;
+  final double? fanRpm;
 }
 
 final class RgsStorageReading {
@@ -127,8 +131,7 @@ final class RgsEnableSensorsResult {
           message: 'Background sensors enabled.',
         );
 
-  const RgsEnableSensorsResult.failure(this.message)
-      : enabled = false;
+  const RgsEnableSensorsResult.failure(this.message) : enabled = false;
 
   final bool enabled;
   final String message;
@@ -145,9 +148,11 @@ final class RgsWindowsSensors {
 
   DateTime _lastTaskStartAttempt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Future<RgsSensorSnapshot> readSnapshot({bool tryStartExistingTask = true}) async {
+  Future<RgsSensorSnapshot> readSnapshot(
+      {bool tryStartExistingTask = true}) async {
     if (!Platform.isWindows) {
-      return RgsSensorSnapshot.unavailable('Windows sensors are only available on Windows.');
+      return RgsSensorSnapshot.unavailable(
+          'Windows sensors are only available on Windows.');
     }
 
     var snapshot = await _readBackendSnapshot();
@@ -179,8 +184,7 @@ final class RgsWindowsSensors {
     final script = _buildInstallTaskScript(backendPath);
     final elevatedArguments =
         _powerShellQuote('-NoProfile -ExecutionPolicy Bypass -Command $script');
-    final command =
-        '\$process = Start-Process -FilePath powershell.exe '
+    final command = '\$process = Start-Process -FilePath powershell.exe '
         '-ArgumentList $elevatedArguments '
         '-WindowStyle Hidden -Verb RunAs -Wait -PassThru; '
         'exit \$process.ExitCode';
@@ -229,7 +233,8 @@ final class RgsWindowsSensors {
     try {
       final uri = Uri.parse('http://127.0.0.1:$backendPort/health');
       final request = await client.getUrl(uri);
-      final response = await request.close().timeout(const Duration(seconds: 2));
+      final response =
+          await request.close().timeout(const Duration(seconds: 2));
       if (response.statusCode != HttpStatus.ok) {
         return false;
       }
@@ -266,13 +271,15 @@ final class RgsWindowsSensors {
     try {
       final uri = Uri.parse('http://127.0.0.1:$backendPort/data.json');
       final request = await client.getUrl(uri);
-      final response = await request.close().timeout(const Duration(seconds: 4));
+      final response =
+          await request.close().timeout(const Duration(seconds: 4));
       if (response.statusCode != HttpStatus.ok) {
-        return RgsSensorSnapshot.unavailable('RGS backend returned HTTP ${response.statusCode}.');
+        return RgsSensorSnapshot.unavailable(
+            'RGS backend returned HTTP ${response.statusCode}.');
       }
 
       final text = await response.transform(utf8.decoder).join();
-      return _parseSnapshot(jsonDecode(text));
+      return parseSnapshot(jsonDecode(text));
     } on Object {
       return RgsSensorSnapshot.unavailable('RGS backend unavailable.');
     } finally {
@@ -280,14 +287,15 @@ final class RgsWindowsSensors {
     }
   }
 
-  RgsSensorSnapshot _parseSnapshot(Object? decoded) {
+  RgsSensorSnapshot parseSnapshot(Object? decoded) {
     if (decoded is! Map || decoded['available'] != true) {
       return RgsSensorSnapshot.unavailable('RGS backend returned no sensors.');
     }
 
     final sensors = decoded['sensors'];
     if (sensors is! List) {
-      return RgsSensorSnapshot.unavailable('RGS backend returned invalid JSON.');
+      return RgsSensorSnapshot.unavailable(
+          'RGS backend returned invalid JSON.');
     }
 
     final rows = sensors
@@ -306,11 +314,13 @@ final class RgsWindowsSensors {
         .toList();
 
     if (rows.isEmpty) {
-      return RgsSensorSnapshot.unavailable('RGS backend returned empty sensors.');
+      return RgsSensorSnapshot.unavailable(
+          'RGS backend returned empty sensors.');
     }
 
     final memory = _parseMemory(decoded['memory']);
-    final hasSystemMetrics = memory.usedBytes != null || decoded['storageDevices'] is List;
+    final hasSystemMetrics =
+        memory.usedBytes != null || decoded['storageDevices'] is List;
     return RgsSensorSnapshot(
       available: true,
       status: hasSystemMetrics
@@ -341,6 +351,7 @@ final class RgsWindowsSensors {
           requirePositive: true,
         ),
         clock: _bestCpuClock(rows),
+        fanRpm: _bestCpuFan(rows),
       ),
       memory: RgsMemoryReading(
         name: memory.name ?? _bestHardwareName(rows.where(_isMemory)),
@@ -417,6 +428,12 @@ final class RgsWindowsSensors {
             requirePositive: true,
             preferHighest: true,
           ),
+          fanRpm: _bestValue(
+            entry.value,
+            hardware: (_) => true,
+            type: 'fan',
+            preferredNames: const ['gpu fan', 'fan'],
+          ),
         ),
     ];
   }
@@ -461,8 +478,9 @@ final class RgsWindowsSensors {
       return hardwareDevices;
     }
 
-    final canMapHardwareByIndex = hardwareDevices.length == logicalDevices.length ||
-        (hardwareDevices.length == 1 && logicalDevices.length == 1);
+    final canMapHardwareByIndex =
+        hardwareDevices.length == logicalDevices.length ||
+            (hardwareDevices.length == 1 && logicalDevices.length == 1);
     return [
       for (var index = 0; index < logicalDevices.length; index++)
         RgsStorageReading(
@@ -473,10 +491,9 @@ final class RgsWindowsSensors {
           totalBytes: logicalDevices[index].totalBytes,
           readBytesPerSecond: logicalDevices[index].readBytesPerSecond,
           writeBytesPerSecond: logicalDevices[index].writeBytesPerSecond,
-          temperature:
-              canMapHardwareByIndex && index < hardwareDevices.length
-                  ? hardwareDevices[index].temperature
-                  : null,
+          temperature: canMapHardwareByIndex && index < hardwareDevices.length
+              ? hardwareDevices[index].temperature
+              : null,
           power: canMapHardwareByIndex && index < hardwareDevices.length
               ? hardwareDevices[index].power
               : null,
@@ -521,7 +538,8 @@ final class RgsWindowsSensors {
     ];
   }
 
-  static Map<String, List<_SensorRow>> _groupByDevice(Iterable<_SensorRow> rows) {
+  static Map<String, List<_SensorRow>> _groupByDevice(
+      Iterable<_SensorRow> rows) {
     final groups = <String, List<_SensorRow>>{};
     for (final row in rows) {
       groups.putIfAbsent(_deviceGroupId(row), () => []).add(row);
@@ -530,7 +548,8 @@ final class RgsWindowsSensors {
   }
 
   static String _deviceGroupId(_SensorRow row) {
-    final parts = row.identifier.split('/').where((part) => part.isNotEmpty).toList();
+    final parts =
+        row.identifier.split('/').where((part) => part.isNotEmpty).toList();
     if (parts.length >= 2) {
       return '/${parts[0]}/${parts[1]}';
     }
@@ -615,6 +634,50 @@ final class RgsWindowsSensors {
     );
   }
 
+  static double? _bestCpuFan(List<_SensorRow> rows) {
+    final cpuHardwareFan = _bestValue(
+      rows,
+      hardware: _isCpu,
+      type: 'fan',
+      preferredNames: const ['cpu fan', 'processor fan', 'fan'],
+    );
+    if (cpuHardwareFan != null) {
+      return cpuHardwareFan;
+    }
+
+    // CPU fan headers are normally exposed by the motherboard's Super I/O
+    // controller rather than by the CPU device itself. Only accept a named
+    // CPU/processor fan here so a case fan is not mislabeled as the CPU fan.
+    final namedCpuFan = _bestValue(
+      rows,
+      hardware: (row) {
+        final name = row.name.toLowerCase();
+        return name.contains('cpu') || name.contains('processor');
+      },
+      type: 'fan',
+      preferredNames: const ['cpu fan', 'cpu opt', 'processor fan'],
+    );
+    if (namedCpuFan != null) {
+      return namedCpuFan;
+    }
+
+    final motherboardFans = rows.where((row) {
+      final hardwareType = row.hardwareType.toLowerCase();
+      return row.type.toLowerCase() == 'fan' &&
+          (hardwareType.contains('superio') ||
+              hardwareType.contains('motherboard'));
+    }).toList();
+    final runningFans =
+        motherboardFans.where((row) => (row.value ?? 0) > 0).toList();
+    if (runningFans.length == 1) {
+      return runningFans.single.value;
+    }
+    if (motherboardFans.length == 1) {
+      return motherboardFans.single.value;
+    }
+    return null;
+  }
+
   static int _scoreName(String name, List<String> preferredNames) {
     final normalized = name.toLowerCase();
     var score = 0;
@@ -644,14 +707,16 @@ final class RgsWindowsSensors {
   }
 
   static bool _isMemory(_SensorRow row) {
-    final text = '${row.identifier} ${row.hardware} ${row.hardwareType}'.toLowerCase();
+    final text =
+        '${row.identifier} ${row.hardware} ${row.hardwareType}'.toLowerCase();
     return text.contains('/ram') ||
         text.contains('memory') ||
         text.contains('dimm');
   }
 
   static bool _isStorage(_SensorRow row) {
-    final text = '${row.identifier} ${row.hardware} ${row.hardwareType}'.toLowerCase();
+    final text =
+        '${row.identifier} ${row.hardware} ${row.hardwareType}'.toLowerCase();
     return text.contains('/hdd') ||
         text.contains('/ssd') ||
         text.contains('storage') ||
@@ -777,7 +842,8 @@ final class RgsWindowsSensors {
 
   static String? _readBackendLogTail() {
     try {
-      final logFile = File('${Directory.systemTemp.path}\\rgs-sensor-backend.log');
+      final logFile =
+          File('${Directory.systemTemp.path}\\rgs-sensor-backend.log');
       if (!logFile.existsSync()) {
         return null;
       }
@@ -787,7 +853,8 @@ final class RgsWindowsSensors {
         return null;
       }
 
-      final tail = lines.skip(lines.length > 2 ? lines.length - 2 : 0).join(' | ');
+      final tail =
+          lines.skip(lines.length > 2 ? lines.length - 2 : 0).join(' | ');
       return 'log: ${tail.length > 360 ? '${tail.substring(0, 360)}...' : tail}';
     } on Object {
       return null;

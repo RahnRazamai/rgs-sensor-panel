@@ -90,8 +90,8 @@ git push origin v1.0.0
 
 ## Live Metrics
 
-- CPU usage, processor name, clock, temperature, and power when available
-- Grouped per-GPU usage, clock, temperature, and power when available
+- CPU usage, processor name, clock, temperature, power, and fan speed when available
+- Grouped per-GPU usage, clock, temperature, power, and fan speed when available
 - RAM usage, physical RAM brand/part when Windows exposes it, and configured RAM speed
 - Grouped per-drive SSD/storage usage and disk read/write rate
 - Date, time, and day
