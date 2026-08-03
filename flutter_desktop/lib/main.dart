@@ -1459,6 +1459,7 @@ class _WidgetContent extends StatelessWidget {
             _Stat('TEMP', _temperature(snapshot.cpu.temperature)),
             _Stat('POWER', _power(snapshot.cpu.power)),
             _Stat('CLOCK', _clock(snapshot.cpu.clock)),
+            _Stat('FAN', _fanSpeed(snapshot.cpu.fanRpm)),
           ],
         ),
       RgsWidgetKind.ram => _SingleStatWidget(
@@ -1510,6 +1511,7 @@ class _WidgetContent extends StatelessWidget {
           _Stat('TEMP', _temperature(gpu.temperature)),
           _Stat('POWER', _power(gpu.power)),
           _Stat('CLOCK', _clock(gpu.clock)),
+          _Stat('FAN', _fanSpeed(gpu.fanRpm)),
         ],
       );
     }
@@ -1530,6 +1532,7 @@ class _WidgetContent extends StatelessWidget {
             stat1: 'TEMP ${_temperature(gpu.temperature)}',
             stat2: 'PWR ${_power(gpu.power)}',
             stat3: _clock(gpu.clock),
+            stat4: 'FAN ${_fanSpeed(gpu.fanRpm)}',
           ),
       ],
     );
@@ -1820,6 +1823,17 @@ class _RowsWidget extends StatelessWidget {
                                   fontSize: 11, fontWeight: FontWeight.w600),
                             ),
                           ),
+                          if (row.stat4 != null)
+                            Expanded(
+                              child: Text(
+                                row.stat4!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                    fontSize: 11, fontWeight: FontWeight.w600),
+                              ),
+                            ),
                         ],
                       ),
                     ],
@@ -2181,6 +2195,7 @@ class _GroupRow {
     required this.stat1,
     required this.stat2,
     required this.stat3,
+    this.stat4,
   });
 
   final String name;
@@ -2190,6 +2205,7 @@ class _GroupRow {
   final String stat1;
   final String stat2;
   final String stat3;
+  final String? stat4;
 }
 
 Future<void> _openUrl(String url) async {
@@ -2213,6 +2229,8 @@ String _temperature(double? value) =>
     value == null ? '-- C' : '${value.toStringAsFixed(0)} C';
 String _power(double? value) =>
     value == null ? '-- W' : '${value.toStringAsFixed(0)} W';
+String _fanSpeed(double? value) =>
+    value == null ? '-- RPM' : '${value.toStringAsFixed(0)} RPM';
 
 String _sensorLoadingMessage(String status) {
   final normalized = status.toLowerCase();
