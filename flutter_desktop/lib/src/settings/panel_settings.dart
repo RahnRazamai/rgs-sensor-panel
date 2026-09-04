@@ -88,12 +88,14 @@ final class RgsPanelSettings {
     required this.showSupportPanel,
     required this.autoLaunchOnBoot,
     required double widgetOpacity,
+    required double widgetTextScale,
   })  : hiddenIds = hiddenIds.map(_normalizeId).toSet(),
         widgetPositions = {
           for (final entry in widgetPositions.entries)
             _normalizeId(entry.key): entry.value,
         },
-        widgetOpacity = _clampOpacity(widgetOpacity);
+        widgetOpacity = _clampOpacity(widgetOpacity),
+        widgetTextScale = _clampTextScale(widgetTextScale);
 
   static const cpuWidgetId = 'widget:cpu';
   static const ramWidgetId = 'widget:ram';
@@ -101,6 +103,9 @@ final class RgsPanelSettings {
   static const storageWidgetId = 'widget:storage';
   static const clockWidgetId = 'widget:clock';
   static const musicWidgetId = 'widget:music';
+  static const defaultWidgetTextScale = 1.0;
+  static const minimumWidgetTextScale = 0.75;
+  static const maximumWidgetTextScale = 1.5;
   static const _currentSettingsVersion = 2;
 
   final Set<String> hiddenIds;
@@ -111,6 +116,7 @@ final class RgsPanelSettings {
   bool showSupportPanel;
   bool autoLaunchOnBoot;
   double widgetOpacity;
+  double widgetTextScale;
 
   static RgsPanelSettings firstLaunchDefaults() {
     return RgsPanelSettings(
@@ -129,6 +135,7 @@ final class RgsPanelSettings {
       showSupportPanel: true,
       autoLaunchOnBoot: false,
       widgetOpacity: 0.95,
+      widgetTextScale: defaultWidgetTextScale,
     );
   }
 
@@ -177,6 +184,8 @@ final class RgsPanelSettings {
           value['AutoLaunchOnBoot'] as bool? ?? defaults.autoLaunchOnBoot,
       widgetOpacity:
           _asDouble(value['WidgetOpacity']) ?? defaults.widgetOpacity,
+      widgetTextScale:
+          _asDouble(value['WidgetTextScale']) ?? defaults.widgetTextScale,
     );
   }
 
@@ -250,6 +259,7 @@ final class RgsPanelSettings {
           'ShowSupportPanel': showSupportPanel,
           'AutoLaunchOnBoot': autoLaunchOnBoot,
           'WidgetOpacity': widgetOpacity,
+          'WidgetTextScale': widgetTextScale,
         }),
       );
     } on Object {
@@ -318,5 +328,12 @@ final class RgsPanelSettings {
       return 1;
     }
     return value;
+  }
+
+  static double _clampTextScale(double value) {
+    return value.clamp(
+      minimumWidgetTextScale,
+      maximumWidgetTextScale,
+    );
   }
 }
