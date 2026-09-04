@@ -743,6 +743,12 @@ class _ControlPanelPageState extends State<ControlPanelPage> with TrayListener {
                         (settings) => settings.widgetOpacity = value,
                       ),
                     ),
+                    _WidgetTextScaleSlider(
+                      value: _settings.widgetTextScale,
+                      onChanged: (value) => _setPreference(
+                        (settings) => settings.widgetTextScale = value,
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     const _SectionHeader('WIDGETS'),
                     for (final kind in RgsWidgetKind.values)
@@ -1132,7 +1138,9 @@ class _WidgetWindowPageState extends State<WidgetWindowPage> {
     final correctedContent = MediaQuery(
       data: mediaQuery.copyWith(
         textScaler: TextScaler.linear(
-          mediaQuery.textScaler.scale(1) * dpiTextCorrection,
+          mediaQuery.textScaler.scale(1) *
+              dpiTextCorrection *
+              _settings.widgetTextScale,
         ),
       ),
       child: content,
@@ -2057,6 +2065,45 @@ class _OpacitySlider extends StatelessWidget {
             min: 0.35,
             max: 1,
             divisions: 13,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WidgetTextScaleSlider extends StatelessWidget {
+  const _WidgetTextScaleSlider({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final double value;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('Widget text size')),
+              Text('${(value * 100).round()}%'),
+            ],
+          ),
+          Slider(
+            value: value.clamp(
+              RgsPanelSettings.minimumWidgetTextScale,
+              RgsPanelSettings.maximumWidgetTextScale,
+            ),
+            min: RgsPanelSettings.minimumWidgetTextScale,
+            max: RgsPanelSettings.maximumWidgetTextScale,
+            divisions: 15,
+            label: '${(value * 100).round()}%',
             onChanged: onChanged,
           ),
         ],

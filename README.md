@@ -83,7 +83,7 @@ git push origin v1.0.0
 - Use the `12`/`24` button on the time widget to switch clock format.
 - Use the tray menu to open the control panel or exit the app.
 - The control panel can show or hide whole widgets and individual GPU/SSD rows.
-- The control panel can toggle always-on-top, widget opacity, tray-on-close behavior, and auto launch on boot.
+- The control panel can customize widget text size and opacity, toggle always-on-top, tray-on-close behavior, and auto launch on boot.
 - Boot launches start in the tray only and do not open the control panel.
 - The control panel support footer links to Ko-fi, YouTube, and GitHub Sponsors.
 - The first launch asks whether to enable the elevated background hardware sensor task.

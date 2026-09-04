@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:rgs_sensor_panel_flutter/main.dart';
+import 'package:rgs_sensor_panel_flutter/src/settings/panel_settings.dart';
 
 void main() {
   void useLargeSurface(WidgetTester tester) {
@@ -20,6 +21,21 @@ void main() {
 
     expect(find.text('RGS SENSOR PANEL'), findsOneWidget);
     expect(find.text('Widget opacity'), findsOneWidget);
+    expect(find.text('Widget text size'), findsOneWidget);
+    expect(find.text('100%'), findsOneWidget);
+    final textSizeSlider = find.byWidgetPredicate(
+      (widget) =>
+          widget is Slider &&
+          widget.max == RgsPanelSettings.maximumWidgetTextScale,
+    );
+    expect(textSizeSlider, findsOneWidget);
+    await tester.drag(textSizeSlider, const Offset(500, 0));
+    await tester.pump();
+    expect(
+      tester.widget<Slider>(textSizeSlider).value,
+      RgsPanelSettings.maximumWidgetTextScale,
+    );
+    expect(find.text('150%'), findsOneWidget);
     expect(find.text('WIDGETS'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Music player'),

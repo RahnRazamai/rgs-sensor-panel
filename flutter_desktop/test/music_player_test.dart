@@ -36,6 +36,31 @@ void main() {
     expect(optedIn.isVisible(RgsPanelSettings.musicWidgetId), isTrue);
   });
 
+  test('widget text size defaults and clamps persisted values', () {
+    expect(
+      RgsPanelSettings.firstLaunchDefaults().widgetTextScale,
+      RgsPanelSettings.defaultWidgetTextScale,
+    );
+    expect(
+      RgsPanelSettings.fromJson(const {
+        'WidgetTextScale': 1.25,
+      }).widgetTextScale,
+      1.25,
+    );
+    expect(
+      RgsPanelSettings.fromJson(const {
+        'WidgetTextScale': 0.1,
+      }).widgetTextScale,
+      RgsPanelSettings.minimumWidgetTextScale,
+    );
+    expect(
+      RgsPanelSettings.fromJson(const {
+        'WidgetTextScale': 4,
+      }).widgetTextScale,
+      RgsPanelSettings.maximumWidgetTextScale,
+    );
+  });
+
   test('media channel values are parsed and timeline is clamped', () {
     final snapshot = RgsMediaSnapshot.fromChannelValue(const {
       'available': true,
